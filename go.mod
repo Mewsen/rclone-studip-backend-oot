@@ -1,6 +1,6 @@
 module github.com/mewsen/rclone-studip-backend-oot
 
-go 1.25.4
+go 1.26
 
 require github.com/rclone/rclone v1.73.2
 
