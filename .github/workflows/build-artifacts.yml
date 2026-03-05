@@ -1,0 +1,45 @@
+name: Build Artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Mage
+        run: |
+          go install github.com/magefile/mage@v1.15.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build plugin and standalone binaries
+        run: mage
+
+      - name: Publish binaries to GitHub Release assets
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.sha }}
+          name: Build ${{ github.sha }}
+          prerelease: true
+          files: |
+            build/rclone-studip
+            build/librcloneplugin_backend_studip.so
+          fail_on_unmatched_files: true
