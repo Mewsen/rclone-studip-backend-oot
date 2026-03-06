@@ -1,53 +1,98 @@
 # Stud.IP Backend for rclone
 
-This project provides an **rclone backend** for accessing files from **Stud.IP** instances.
+This project provides an rclone backend for accessing files from Stud.IP instances.
 
 Although it should work with all Stud.IP instances, it has currently only been tested with the [University of Bremen](https://elearning.uni-bremen.de) installation.
 
-**Note:** This is a **proof of concept** and currently offers **limited functionality (read-only access)** and **may contain bugs**.
+## Build
 
-## Usage
-
-You can use this backend either as an rclone plugin or by building a custom rclone binary with the backend compiled in.
-
-### 1. Build as an rclone plugin (Supported on macOS & Linux as of now)
-
-1. Edit `/backend/studip/studip.go` and change the package declaration at the top from:
-
-```go
-package studip
-````
-
-to:
-
-```go
-package main
-```
-
-2. Build the plugin using Go’s plugin build mode:
+1. Install Mage (one-time):
 
 ```bash
-go build --buildmode=plugin -o librcloneplugin_backend_studip.so backend/studip/studip.go
+go install github.com/magefile/mage@latest
 ```
 
-3. Load the plugin
+2. Build plugin and standalone binaries:
 
 ```bash
-mv librcloneplugin_backend_studip.so $RCLONE_PLUGIN_PATH/
+mage
 ```
-- All plugins in the folder specified by variable $RCLONE_PLUGIN_PATH are loaded.
-- If this variable doesn't exist, plugin support is disabled.
-- Plugins must be compiled against the exact version of rclone to work. (The rclone used during building the plugin must be the same as the source of rclone)
 
+Build output:
 
+- `build/librcloneplugin_backend_studip.so`
+- `build/rclone-studip`
 
+## Load plugin in rclone
 
-### 2. Build a custom rclone binary with the backend included
-
-You can also build a full rclone binary that has the Stud.IP backend compiled in.
-
-From the repository root, build rclone with:
+To use the plugin artifact with an existing rclone binary:
 
 ```bash
-go build -o rclone-studip
+cp build/librcloneplugin_backend_studip.so "$RCLONE_PLUGIN_PATH/"
+```
+
+Notes:
+
+- All plugins in `$RCLONE_PLUGIN_PATH` are loaded.
+- If `RCLONE_PLUGIN_PATH` is not set, plugin support is disabled.
+- Plugin and rclone must be built from compatible source versions.
+
+## Configuration
+
+Create a remote with `rclone config`, then choose storage type `Stud.IP`.
+
+Backend options:
+
+- `base_url`: Base URL of the Stud.IP JSON API v1 endpoint.  
+  Example: `https://elearning.uni-bremen.de/jsonapi.php/v1/`
+- `username`: Stud.IP login username.
+- `password`: Stud.IP login password (stored obscured by rclone config).
+- `course_id`: Stud.IP course ID (UUID/hash-like ID, not course title).  
+  Example: `59e88658b39093836455413bd1f24f29`
+- `license`: License ID applied to uploaded files. Default: `UNDEF_LICENSE`.
+
+Supported `license` values:
+
+- `FREE_LICENSE`
+- `SELFMADE_NONPUB`
+- `NON_TEXTUAL`
+- `TEXT_NO_LICENSE`
+- `WITH_LICENSE`
+- `UNDEF_LICENSE`
+
+Important:
+
+- If `UNDEF_LICENSE` is used, uploaded files are not readable until a valid license is chosen.
+
+## Usage examples
+
+```bash
+# List directories / files at remote root
+rclone lsd studip-bremen-ma1:
+rclone ls studip-bremen-ma1:
+rclone lsf studip-bremen-ma1:
+
+# Create a directory in the configured course
+rclone mkdir studip-bremen-ma1:uploads
+
+# Upload a directory recursively
+rclone copy ./localdir studip-bremen-ma1:uploads/localdir
+
+# Upload a single file to an exact destination path
+rclone copyto ./report.pdf studip-bremen-ma1:uploads/report.pdf
+
+# Stream text into a remote file
+printf "hello from rclone\n" | rclone rcat studip-bremen-ma1:uploads/hello.txt
+
+# Download files back to local disk
+rclone copy studip-bremen-ma1:uploads ./downloads/uploads
+
+# Show file content
+rclone cat studip-bremen-ma1:uploads/hello.txt
+
+# Remove files / empty directories
+rclone deletefile studip-bremen-ma1:uploads/hello.txt
+rclone rmdir studip-bremen-ma1:uploads/empty-dir
+
+rclone mount studip-bremen-ma1: ./mount
 ```
