@@ -30,7 +30,7 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Build plugin and standalone binaries
-        run: mage build
+        run: mage
 
       - name: Publish binaries to GitHub Release assets
         if: github.event_name != 'pull_request'
