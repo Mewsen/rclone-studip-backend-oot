@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	modulePath = "github.com/mewsen/rclone-studip-backend-oot"
-	outputDir  = "build"
-	pluginName = "librcloneplugin_backend_studip.so"
-	binaryName = "rclone-studip"
+	modulePath   = "github.com/mewsen/rclone-studip-backend-oot"
+	outputDir    = "build"
+	pluginName   = "librcloneplugin_backend_studip.so"
+	binaryName   = "rclone-studip"
+	goExperiment = "nodwarf5"
 )
 
 // Default target when running mage without arguments.
@@ -55,7 +56,8 @@ func Plugin() error {
 		return err
 	}
 
-	return run("go", "build", "--buildmode=plugin", "-o", pluginOutputPath(), wrapper)
+	return runWithEnv([]string{"GOEXPERIMENT=" + goExperiment},
+		"go", "build", "--buildmode=plugin", "-o", pluginOutputPath(), wrapper)
 }
 
 // Standalone builds the custom rclone binary with the backend included.
@@ -64,7 +66,8 @@ func Standalone() error {
 		return err
 	}
 
-	return run("go", "build", "-o", binaryOutputPath(), ".")
+	return runWithEnv([]string{"GOEXPERIMENT=" + goExperiment},
+		"go", "build", "-o", binaryOutputPath(), ".")
 }
 
 // Clean removes build artifacts produced by this magefile.
@@ -90,9 +93,17 @@ func pluginOutputPath() string { return filepath.Join(outputDir, pluginName) }
 func binaryOutputPath() string { return filepath.Join(outputDir, binaryName) }
 
 func run(name string, args ...string) error {
+	return runWithEnv(nil, name, args...)
+}
+
+func runWithEnv(extraEnv []string, name string, args ...string) error {
 	fmt.Printf(">> %s %s\n", name, shellJoin(args))
+	if len(extraEnv) > 0 {
+		fmt.Printf(">> env %s\n", shellJoin(extraEnv))
+	}
 
 	cmd := exec.Command(name, args...)
+	cmd.Env = append(os.Environ(), extraEnv...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
