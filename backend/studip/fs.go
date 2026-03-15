@@ -276,10 +276,11 @@ func (f *Fs) FillFolderNode(
 
 	{
 		errChan := make(chan error)
-		length := len(folderNode.Children)
+		length := 0
 		{
 			for _, childrenNode := range folderNode.Children {
 				if childrenNode.IsReadable {
+					length++
 					go func() {
 						errChan <- f.FillFolderNode(ctx, childrenNode, joinPath(path, childrenNode.Name))
 					}()
