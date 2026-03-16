@@ -1,0 +1,54 @@
+name: Update rclone dependency
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-rclone:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Get latest rclone release
+        id: latest
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/rclone/rclone/releases/latest | jq -r .tag_name)
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+
+      - name: Get current rclone version
+        id: current
+        run: |
+          CURRENT=$(go list -m -f '{{.Version}}' github.com/rclone/rclone)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+
+      - name: Update dependency
+        if: steps.latest.outputs.latest != steps.current.outputs.current
+        run: |
+          go get github.com/rclone/rclone@${{ steps.latest.outputs.latest }}
+          go mod tidy
+
+      - name: Create Pull Request
+        if: steps.latest.outputs.latest != steps.current.outputs.current
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: update-rclone-${{ steps.latest.outputs.latest }}
+          commit-message: "Update rclone to ${{ steps.latest.outputs.latest }}"
+          title: "Update rclone to ${{ steps.latest.outputs.latest }}"
+          body: |
+            Automated dependency update.
+
+            rclone updated from `${{ steps.current.outputs.current }}`  
+            to `${{ steps.latest.outputs.latest }}`.
