@@ -7,11 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/rclone/rclone/fs/config/obscure"
 )
 
 const (
@@ -28,9 +34,91 @@ const (
 	pluginBuildTreeDir  = "rclone"
 	pluginEntrypointDir = "cmd/studipplugin"
 	pluginEntrypointSrc = "package main\n\nimport _ \"github.com/mewsen/rclone-studip-backend-oot/backend/studip\"\n"
+
+	studIPDemoBaseURL  = "http://localhost:8034/jsonapi.php/v1/"
+	studIPDemoUsername = "test_dozent"
+	studIPDemoPassword = "testing"
+	studIPDemoLicense  = "SELFMADE_NONPUB"
+	studIPConfigName   = "test-rclone.conf"
 )
 
 var Default = BuildPluginAndStandaloneBinary
+
+type studIPTestConfig struct {
+	BaseURL    string
+	Username   string
+	Password   string
+	CourseID   string
+	License    string
+	ConfigPath string
+}
+
+type studIPCoursesResponse struct {
+	Data []studIPCourse `json:"data"`
+}
+
+type studIPCourse struct {
+	ID         string `json:"id"`
+	Attributes struct {
+		Title      string `json:"title"`
+		CourseType int    `json:"course-type"`
+	} `json:"attributes"`
+	Relationships struct {
+		Folders struct {
+			Links struct {
+				Related string `json:"related"`
+			} `json:"links"`
+		} `json:"folders"`
+	} `json:"relationships"`
+}
+
+type studIPFoldersResponse struct {
+	Data []struct {
+		Attributes struct {
+			FolderType string `json:"folder-type"`
+			IsReadable bool   `json:"is-readable"`
+			IsWritable bool   `json:"is-writable"`
+		} `json:"attributes"`
+	} `json:"data"`
+}
+
+func TestAgainstContainer() error {
+	err := runCommandWithEnv(nil, "git", "submodule", "update", "--init", "--recursive")
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir %q: %w", outputDir, err)
+	}
+
+	config, course, err := prepareStudIPTestEnvironment()
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf(">> using Stud.IP demo account %q\n", config.Username)
+	fmt.Printf(">> using demo course %q (%s)\n", course.Attributes.Title, course.ID)
+	fmt.Printf(">> wrote rclone config to %s\n", config.ConfigPath)
+	fmt.Printf(">> running backend tests: RCLONE_CONFIG=%s go test -parallel=1 -v -count=1 ./backend/studip/studip_test.go\n", config.ConfigPath)
+
+	defer func() {
+		fmt.Println(">> stopping Stud.IP demo stack")
+		if downErr := runCommandWithEnv(nil, "docker", "compose", "down", "--volumes", "--remove-orphans"); downErr != nil {
+			fmt.Fprintf(os.Stderr, "failed to stop Stud.IP demo stack: %v\n", downErr)
+		}
+	}()
+
+	err = runCommandWithEnv(
+		[]string{"RCLONE_CONFIG=" + config.ConfigPath},
+		"go", "test", "-parallel=1", "-v", "-count=1", "./backend/studip/studip_test.go",
+	)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
 
 func BuildPluginAndStandaloneBinary() error {
 	if err := Plugin(); err != nil {
@@ -44,8 +132,8 @@ func Plugin() error {
 		return fmt.Errorf("go plugin buildmode is not supported on windows")
 	}
 
-	if err := ensureOutputDir(); err != nil {
-		return err
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir %q: %w", outputDir, err)
 	}
 
 	repoRoot, err := os.Getwd()
@@ -136,8 +224,8 @@ func UninstallPlugin() error {
 }
 
 func Standalone() error {
-	if err := ensureOutputDir(); err != nil {
-		return err
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir %q: %w", outputDir, err)
 	}
 
 	return runCommandWithEnv(
@@ -177,12 +265,243 @@ func Clean() error {
 	return nil
 }
 
-func ensureOutputDir() error {
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("create output dir %q: %w", outputDir, err)
+func prepareStudIPTestEnvironment() (studIPTestConfig, studIPCourse, error) {
+	config := studIPTestConfig{
+		BaseURL:    envOrDefault("STUDIP_TEST_BASE_URL", studIPDemoBaseURL),
+		Username:   envOrDefault("STUDIP_TEST_USERNAME", studIPDemoUsername),
+		Password:   envOrDefault("STUDIP_TEST_PASSWORD", studIPDemoPassword),
+		License:    envOrDefault("STUDIP_TEST_LICENSE", studIPDemoLicense),
+		ConfigPath: envOrDefault("RCLONE_CONFIG", filepath.Join(outputDir, studIPConfigName)),
+	}
+
+	configPath, err := filepath.Abs(config.ConfigPath)
+	if err != nil {
+		return config, studIPCourse{}, fmt.Errorf("resolve rclone config path: %w", err)
+	}
+	config.ConfigPath = configPath
+
+	if err := recreateStudIPDemoStack(); err != nil {
+		return config, studIPCourse{}, err
+	}
+
+	var course studIPCourse
+	course, err = waitForStudIPDemoCourse(config.BaseURL, config.Username, config.Password, 2*time.Minute)
+	if err != nil {
+		return config, studIPCourse{}, err
+	}
+	config.CourseID = course.ID
+
+	if err := writeStudIPTestConfig(config); err != nil {
+		return config, studIPCourse{}, err
+	}
+
+	return config, course, nil
+}
+
+func recreateStudIPDemoStack() error {
+	fmt.Println(">> recreating fresh Stud.IP demo stack")
+
+	if err := runCommandWithEnv(nil, "docker", "compose", "down", "--volumes", "--remove-orphans"); err != nil {
+		return err
+	}
+
+	return runCommandWithEnv(nil, "docker", "compose", "up", "-d", "--build")
+}
+
+func waitForStudIPDemoCourse(baseURL, username, password string, timeout time.Duration) (studIPCourse, error) {
+	var (
+		course  studIPCourse
+		lastErr error
+	)
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		course, lastErr = discoverStudIPDemoCourse(baseURL, username, password)
+		if lastErr == nil {
+			return course, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	if lastErr == nil {
+		lastErr = errors.New("no writable demo course became available")
+	}
+
+	return studIPCourse{}, fmt.Errorf("wait for Stud.IP demo course: %w", lastErr)
+}
+
+func waitForStudIPCourse(baseURL, username, password, courseID string, timeout time.Duration) (studIPCourse, error) {
+	var (
+		course  studIPCourse
+		lastErr error
+	)
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		course, lastErr = fetchStudIPCourse(baseURL, username, password, courseID)
+		if lastErr == nil {
+			lastErr = verifyStudIPCourseFolders(baseURL, username, password, courseID)
+		}
+		if lastErr == nil {
+			return course, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("course %q never became readable", courseID)
+	}
+
+	return studIPCourse{}, fmt.Errorf("wait for Stud.IP course %q: %w", courseID, lastErr)
+}
+
+func discoverStudIPDemoCourse(baseURL, username, password string) (studIPCourse, error) {
+	courses, err := fetchStudIPCourses(baseURL, username, password)
+	if err != nil {
+		return studIPCourse{}, err
+	}
+
+	var lastErr error
+	for _, course := range courses.Data {
+		if strings.TrimSpace(course.Relationships.Folders.Links.Related) == "" {
+			continue
+		}
+		if err := verifyStudIPCourseFolders(baseURL, username, password, course.ID); err != nil {
+			lastErr = err
+			continue
+		}
+		return course, nil
+	}
+
+	if lastErr != nil {
+		return studIPCourse{}, lastErr
+	}
+
+	return studIPCourse{}, errors.New("courses endpoint returned no course with folder access")
+}
+
+func fetchStudIPCourses(baseURL, username, password string) (*studIPCoursesResponse, error) {
+	response := new(studIPCoursesResponse)
+	if err := studIPGetJSON(baseURL, username, password, "courses", response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func fetchStudIPCourse(baseURL, username, password, courseID string) (studIPCourse, error) {
+	var response struct {
+		Data studIPCourse `json:"data"`
+	}
+
+	if err := studIPGetJSON(baseURL, username, password, fmt.Sprintf("courses/", courseID), &response); err != nil {
+		return studIPCourse{}, err
+	}
+
+	return response.Data, nil
+}
+
+func verifyStudIPCourseFolders(baseURL, username, password, courseID string) error {
+	response := new(studIPFoldersResponse)
+	if err := studIPGetJSON(baseURL, username, password, fmt.Sprintf("courses/%s/folders", courseID), response); err != nil {
+		return err
+	}
+
+	for _, folder := range response.Data {
+		if folder.Attributes.FolderType != "RootFolder" {
+			continue
+		}
+		if !folder.Attributes.IsReadable {
+			return fmt.Errorf("course %q root folder is not readable", courseID)
+		}
+		if !folder.Attributes.IsWritable {
+			return fmt.Errorf("course %q root folder is not writable", courseID)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("course %q has no root folder in the folders response", courseID)
+}
+
+func studIPGetJSON(baseURL, username, password, relativePath string, out any) error {
+	requestURL, err := studIPAPIURL(baseURL, relativePath)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return fmt.Errorf("create request %q: %w", requestURL, err)
+	}
+	req.SetBasicAuth(username, password)
+	req.Header.Set("Accept", "application/vnd.api+json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("GET %s failed: %w", requestURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("GET %s returned %s: %s", requestURL, resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode %s response: %w", requestURL, err)
 	}
 
 	return nil
+}
+
+func studIPAPIURL(baseURL, relativePath string) (string, error) {
+	base, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil {
+		return "", fmt.Errorf("parse Stud.IP base URL %q: %w", baseURL, err)
+	}
+
+	relativePath = strings.TrimLeft(strings.TrimSpace(relativePath), "/")
+	ref, err := url.Parse(relativePath)
+	if err != nil {
+		return "", fmt.Errorf("parse Stud.IP relative path %q: %w", relativePath, err)
+	}
+
+	return base.ResolveReference(ref).String(), nil
+}
+
+func writeStudIPTestConfig(config studIPTestConfig) error {
+	if err := os.MkdirAll(filepath.Dir(config.ConfigPath), 0o755); err != nil {
+		return fmt.Errorf("create rclone config dir: %w", err)
+	}
+
+	obscuredPassword, err := obscure.Obscure(config.Password)
+	if err != nil {
+		return fmt.Errorf("obscure Stud.IP password: %w", err)
+	}
+
+	data := strings.Join([]string{
+		"[TestStudIP]",
+		"type = studip",
+		"base_url = " + config.BaseURL,
+		"username = " + config.Username,
+		"password = " + obscuredPassword,
+		"course_id = " + config.CourseID,
+		"license = " + config.License,
+		"",
+	}, "\n")
+
+	if err := os.WriteFile(config.ConfigPath, []byte(data), 0o600); err != nil {
+		return fmt.Errorf("write rclone config %q: %w", config.ConfigPath, err)
+	}
+
+	return nil
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func installedPluginPath() (string, error) {

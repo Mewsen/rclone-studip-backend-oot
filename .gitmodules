@@ -1,0 +1,4 @@
+[submodule "studip"]
+	path = studip
+	url = https://github.com/Mewsen/studip.git
+	branch = testing

@@ -1,0 +1,38 @@
+services:
+  db:
+    image: mariadb:10.5
+    command:
+      - --innodb-file-per-table=ON
+      - --innodb-large-prefix=ON
+      - --innodb-file-format=Barracuda
+      - --sql-mode=NO_ENGINE_SUBSTITUTION
+    volumes:
+      - db_data:/var/lib/mysql
+    restart: unless-stopped 
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: 1
+      MYSQL_DATABASE: studip_db
+      MYSQL_USER: studip_user
+      MYSQL_PASSWORD: studip_password
+  web:
+    build:
+      context: ./studip
+      dockerfile: ./docker/studip/Dockerfile
+    image: rclone-studip-demo-web:local-studip
+    depends_on:
+      - db
+    ports:
+    - "8034:80"
+    volumes:
+      - ./docker/php/zz-test.ini:/usr/local/etc/php/conf.d/zz-test.ini:ro
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: studip_db
+      MYSQL_USER: studip_user
+      MYSQL_PASSWORD: studip_password
+      MYSQL_HOST: db
+      ENV: production
+      DEMO_DATA: 1
+
+volumes:
+  db_data: {}
