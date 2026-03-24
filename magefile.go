@@ -116,6 +116,21 @@ func TestAgainstContainer() error {
 	if err != nil {
 		return err
 	}
+	err = runCommandWithEnv(
+		[]string{"RCLONE_CONFIG=" + config.ConfigPath},
+		"go", "-C", "fs/sync", "test", "-parallel=1", "-remote", "TestStudIP:fs/sync", "-v", "-count=1",
+	)
+	if err != nil {
+		return err
+	}
+
+	err = runCommandWithEnv(
+		[]string{"RCLONE_CONFIG=" + config.ConfigPath},
+		"go", "-C", "fs/sync", "test",  "-parallel=1", "-remote", "TestStudIP:fs/operations", "-v", "-count=1",
+	)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
