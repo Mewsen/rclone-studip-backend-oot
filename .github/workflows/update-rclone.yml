@@ -45,8 +45,8 @@ jobs:
         uses: peter-evans/create-pull-request@v6
         with:
           branch: update-rclone-${{ steps.latest.outputs.latest }}
-          commit-message: "Update rclone to ${{ steps.latest.outputs.latest }}"
-          title: "Update rclone to ${{ steps.latest.outputs.latest }}"
+          commit-message: "chore(deps): update rclone to ${{ steps.latest.outputs.latest }}"
+          title: "chore(deps): update rclone to ${{ steps.latest.outputs.latest }}"
           body: |
             Automated dependency update.
 
