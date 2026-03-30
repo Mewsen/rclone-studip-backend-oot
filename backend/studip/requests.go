@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path/filepath"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/lib/rest"
@@ -536,6 +538,135 @@ func (f *Fs) studIPSetTermsOfUse(
 		Path:        URL,
 		ContentType: "application/vnd.api+json",
 		Body:        bytes.NewReader(b),
+	})
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	return nil
+}
+
+func (f *Fs) studIPCopyDirectory(ctx context.Context, directoryID string, destinationDirectoryID string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	Assert(
+		f != nil,
+		fmt.Sprintf(
+			"f must be not nil; f=%q",
+			f,
+		),
+	)
+
+	if directoryID == "" {
+		return errors.New("directoryID is empty")
+	}
+
+	URL := fmt.Sprintf("folders/%s/copy", directoryID)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	if err := writer.WriteField("destination", destinationDirectoryID); err != nil {
+		return fmt.Errorf("write multipart field destination: %w", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	res, err := f.client.Call(ctx, &rest.Opts{
+		Method:      "POST",
+		Path:        URL,
+		Body:        &body,
+		ContentType: writer.FormDataContentType(),
+	})
+	if err != nil {
+		return err
+	}
+
+	defer res.Body.Close()
+
+	return nil
+}
+
+func (f *Fs) studIPCopyFile(
+	ctx context.Context,
+	resourceID string,
+	destinationDirectoryID string,
+	filename string,
+	licenseID string,
+) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	Assert(
+		f != nil,
+		fmt.Sprintf(
+			"f must be not nil; f=%q",
+			f,
+		),
+	)
+
+	if resourceID == "" {
+		return errors.New("resourceID is empty")
+	}
+
+	if destinationDirectoryID == "" {
+		return errors.New("destinationID is empty")
+	}
+
+	if filename == "" {
+		return errors.New("filename is empty")
+	}
+
+	URL := fmt.Sprintf("folders/%s/file-refs", destinationDirectoryID)
+
+	payload := struct {
+		Data struct {
+			Type       string `json:"type"`
+			Attributes struct {
+				Name string `json:"name"`
+			} `json:"attributes"`
+			Relationships struct {
+				TermsOfUse struct {
+					Data struct {
+						Type string `json:"type,omitempty"`
+						ID   string `json:"id,omitempty"`
+					} `json:"data,omitempty"`
+				} `json:"terms-of-use,omitempty"`
+				File struct {
+					Data struct {
+						Type string `json:"type"`
+						ID   string `json:"id"`
+					} `json:"data"`
+				} `json:"file"`
+			} `json:"relationships"`
+		} `json:"data"`
+	}{}
+
+	payload.Data.Type = "file-refs"
+	payload.Data.Attributes.Name = filename
+	payload.Data.Relationships.File.Data.ID = resourceID
+	payload.Data.Relationships.File.Data.Type = "files"
+	if f.opt.License != "" {
+		payload.Data.Relationships.TermsOfUse.Data.Type = "terms-of-use"
+		payload.Data.Relationships.TermsOfUse.Data.ID = f.opt.License
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	res, err := f.client.Call(ctx, &rest.Opts{
+		Method:      "POST",
+		Path:        URL,
+		ContentType: "application/vnd.api+json",
+		Body:        bytes.NewReader(body),
 	})
 	if err != nil {
 		return err

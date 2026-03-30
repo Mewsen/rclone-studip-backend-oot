@@ -1033,14 +1033,19 @@ func (f *Fs) Features() *fs.Features {
 		CanHaveEmptyDirectories: true,
 		CaseInsensitive:         true,
 		//ReadMimeType:            true,
+		Copy: ServerSideCopy,
 		// TODO: Implement these
-		Copy:    nil,
 		Move:    nil,
 		DirMove: nil,
 		// implement this
 		Purge: nil,
 	}).
 		Fill(context.Background(), f)
+}
+
+// TODO: implement this
+func ServerSideCopy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
+	return nil, fs.ErrorNotImplemented
 }
 
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
