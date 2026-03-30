@@ -367,11 +367,12 @@ func (o *Object) Remove(ctx context.Context) error {
 		return err
 	}
 
-	parent := o.fs.ft.relativeRoot
-	if parent != nil {
+	var parent *Node
+	if o.fs.ft.relativeRoot != nil {
 		parentDir := dirPath(o.remote)
-		parent = parent.GetNodeAtPath(parentDir)
+		parent = o.fs.ft.relativeRoot.GetNodeAtPath(parentDir)
 	}
+
 	if parent != nil {
 		filename := basePath(o.remote)
 		for i, child := range parent.Children {
