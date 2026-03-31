@@ -2,28 +2,25 @@
 
 This project provides an rclone backend for accessing files from Stud.IP instances.
 
-Although it should work with all Stud.IP instances, it has currently only been tested with the [University of Bremen](https://elearning.uni-bremen.de) installation.
+## Usage
 
-## Build
+This backend can be used in two ways:
 
-1. Install Mage (one-time):
+- as a standalone rclone-compatible binary (recommended)
 
-```bash
-go install github.com/magefile/mage@latest
-```
+or 
 
-2. Build plugin and standalone binaries:
+- as an rclone plugin loaded by an existing rclone installation
 
-```bash
-mage
-```
+### Standalone binary
 
-Build output:
+Download the binary for your platform from the [releases page](https://github.com/Mewsen/rclone-studip-backend-oot/releases).
 
-- `build/librcloneplugin_backend_studip.so`
-- `build/rclone-studip`
+It is recommended to move the binary somewhere in your `PATH`.
 
-## Load plugin in rclone
+Then continue with the [configuration](#configuration).
+
+### Plugin with existing rclone
 
 To use the plugin artifact with an existing rclone binary:
 
@@ -31,8 +28,11 @@ To use the plugin artifact with an existing rclone binary:
 cp build/librcloneplugin_backend_studip.so "$RCLONE_PLUGIN_PATH/"
 ```
 
+Then continue with the [configuration](#configuration).
+
 Notes:
 
+- Linux and MacOS only.
 - All plugins in `$RCLONE_PLUGIN_PATH` are loaded.
 - If `RCLONE_PLUGIN_PATH` is not set, plugin support is disabled.
 - Plugin and rclone must be built from compatible source versions.
@@ -47,7 +47,7 @@ Backend options:
   Example: `https://elearning.uni-bremen.de/jsonapi.php/v1/`
 - `username`: Stud.IP login username.
 - `password`: Stud.IP login password (stored obscured by rclone config).
-- `course_id`: Stud.IP course ID (UUID/hash-like ID, not course title).  
+- `course_id`: Stud.IP course ID.
   Example: `59e88658b39093836455413bd1f24f29`
 - `license`: License ID applied to uploaded files. Default: `UNDEF_LICENSE`.
 
@@ -96,3 +96,27 @@ rclone rmdir studip-bremen-ma1:uploads/empty-dir
 
 rclone mount studip-bremen-ma1: ./mount
 ```
+
+## Build
+
+1. Install Mage (one-time):
+
+```bash
+go install github.com/magefile/mage@latest
+```
+
+2. Build plugin and standalone binaries:
+
+```bash
+mage
+```
+
+Build output:
+
+- `build/rclone-studip-darwin-amd64`
+- `build/rclone-studip-darwin-arm64`
+- `build/rclone-studip-linux-amd64`
+- `build/rclone-studip-linux-arm64`
+- `build/rclone-studip-windows-amd64.exe`
+- `build/rclone-studip-windows-arm64.exe`
+- `build/librcloneplugin_backend_studip.so`
