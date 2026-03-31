@@ -47,5 +47,10 @@ jobs:
           fail_on_unmatched_files: true
           tag_name: ${{ needs.release-please.outputs.tag_name }}
           files: |
-            build/rclone-studip
+            build/rclone-studip-darwin-amd64
+            build/rclone-studip-darwin-arm64
+            build/rclone-studip-linux-amd64
+            build/rclone-studip-linux-arm64
+            build/rclone-studip-windows-amd64.exe
+            build/rclone-studip-windows-arm64.exe
             build/librcloneplugin_backend_studip.so

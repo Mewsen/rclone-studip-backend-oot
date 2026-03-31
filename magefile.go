@@ -243,12 +243,48 @@ func Standalone() error {
 		return fmt.Errorf("create output dir %q: %w", outputDir, err)
 	}
 
-	return runCommandWithEnv(
-		[]string{"GOEXPERIMENT=" + goExperiment},
-		"go", "build", "-o", binaryOutputPath(), ".",
-	)
+	type target struct {
+		goos   string
+		goarch string
+	}
+
+	targets := []target{
+		{goos: "linux", goarch: "amd64"},
+		{goos: "linux", goarch: "arm64"},
+		{goos: "windows", goarch: "amd64"},
+		{goos: "windows", goarch: "arm64"},
+		{goos: "darwin", goarch: "amd64"},
+		{goos: "darwin", goarch: "arm64"},
+	}
+
+	for _, t := range targets {
+		out := binaryOutputPathFor(t.goos, t.goarch)
+
+		env := []string{
+			"GOEXPERIMENT=" + goExperiment,
+			"GOOS=" + t.goos,
+			"GOARCH=" + t.goarch,
+			"CGO_ENABLED=0",
+		}
+
+		if err := runCommandWithEnv(
+			env,
+			"go", "build", "-o", out, ".",
+		); err != nil {
+			return fmt.Errorf("build %s/%s: %w", t.goos, t.goarch, err)
+		}
+	}
+
+	return nil
 }
 
+func binaryOutputPathFor(goos, goarch string) string {
+	name := fmt.Sprintf("rclone-studip-%s-%s", goos, goarch)
+	if goos == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(outputDir, name)
+}
 func RunStandalone(args ...string) error {
 	if err := Standalone(); err != nil {
 		return err
