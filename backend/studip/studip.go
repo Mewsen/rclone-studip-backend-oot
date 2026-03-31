@@ -91,9 +91,12 @@ type Options struct {
 }
 
 var (
-	_ fs.Fs     = &Fs{}
-	_ fs.Object = &Object{}
-	//_ fs.MimeTyper = &Object{}
+	_ fs.Fs        = &Fs{}
+	_ fs.Object    = &Object{}
+	_ fs.Purger    = &Fs{}
+	_ fs.Mover     = &Fs{}
+	_ fs.DirMover  = &Fs{}
+	_ fs.MimeTyper = &Object{}
 	_ fs.Directory = &Directory{}
 )
 
