@@ -452,6 +452,25 @@ func lockMutationCourses(fss ...*Fs) func() {
 	}
 }
 
+func (f *Fs) objectFromFileRefData(remote string, data *StudIPFileRefData) *Object {
+	if data == nil {
+		return nil
+	}
+
+	return &Object{
+		fs:             f,
+		remote:         cleanPath(remote),
+		id:             data.ID,
+		size:           data.Attributes.Filesize,
+		isReadable:     data.Attributes.IsReadable,
+		isEditable:     data.Attributes.IsEditable,
+		isWritable:     data.Attributes.IsWritable,
+		IsDownloadable: data.Attributes.IsDownloadable,
+		contentType:    data.Attributes.MimeType,
+		modTime:        data.Attributes.Chdate,
+	}
+}
+
 func updateSubtreePaths(node *Node) {
 	if node == nil {
 		return
@@ -469,6 +488,65 @@ func updateSubtreePaths(node *Node) {
 	}
 }
 
+func applyFileRefData(node *Node, data *StudIPFileRefData) {
+	if node == nil || data == nil {
+		return
+	}
+
+	node.ID = data.ID
+	node.IsReadable = data.Attributes.IsReadable
+	node.IsWritable = data.Attributes.IsWritable
+	node.IsEditable = data.Attributes.IsEditable
+	node.IsDownloadable = data.Attributes.IsDownloadable
+	node.ContentType = data.Attributes.MimeType
+	node.Size = data.Attributes.Filesize
+	node.ChDate = data.Attributes.Chdate
+}
+
+func (f *Fs) moveNodeInTree(sourceAbs, destAbs string, fileData *StudIPFileRefData) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.ft.root == nil {
+		return false
+	}
+
+	sourceNode := f.ft.root.GetNodeAtPath(sourceAbs)
+	if sourceNode == nil {
+		sourceNode = f.ft.root.GetNodeAtPath(sourceAbs)
+	}
+	if sourceNode == nil {
+		return false
+	}
+
+	destParent := f.ft.root.GetNodeAtPath(dirPath(destAbs))
+	if destParent == nil {
+		destParent = f.ft.root.GetNodeAtPath(dirPath(destAbs))
+	}
+	if destParent == nil || !destParent.IsDir {
+		return false
+	}
+
+	if sourceNode.Parent != nil {
+		index := slices.Index(sourceNode.Parent.Children, sourceNode)
+		if index >= 0 {
+			sourceNode.Parent.Children = slices.Delete(sourceNode.Parent.Children, index, index+1)
+		}
+	}
+
+	sourceNode.Name = basePath(destAbs)
+	sourceNode.Parent = destParent
+	sourceNode.Path = joinPath(destParent.Path, sourceNode.Name)
+	if !sourceNode.IsDir {
+		applyFileRefData(sourceNode, fileData)
+	}
+	destParent.Children = append(destParent.Children, sourceNode)
+	updateSubtreePaths(sourceNode)
+	f.updateRelativeRootFromTree()
+	f.bumpTreeGenerationAndMarkCurrent()
+
+	return true
+}
 
 func (f *Fs) GetCourseFileTree(
 	ctx context.Context,
@@ -1393,15 +1471,213 @@ func (f *Fs) Features() *fs.Features {
 	return (&fs.Features{
 		CanHaveEmptyDirectories: true,
 		CaseInsensitive:         true,
-		//ReadMimeType:            true,
-		// TODO: Implement these
-		Copy:    nil,
-		Move:    nil,
-		DirMove: nil,
-		// implement this
-		Purge: nil,
+		Copy:                    nil,
+		Purge:                   nil,
 	}).
 		Fill(context.Background(), f)
+}
+
+func (f *Fs) Move(
+	ctx context.Context,
+	src fs.Object,
+	remote string,
+) (fs.Object, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	remote = cleanPath(remote)
+	if remote == "" {
+		return nil, fs.ErrorCantMove
+	}
+
+	srcObject, ok := src.(*Object)
+	if !ok || srcObject == nil || srcObject.fs == nil {
+		return nil, fs.ErrorCantMove
+	}
+
+	srcFs := srcObject.fs
+	if !f.sameCourse(srcFs) {
+		return nil, fs.ErrorCantMove
+	}
+
+	unlockCourses := lockMutationCourses(srcFs, f)
+	defer unlockCourses()
+
+	if err := srcFs.ensureCurrentFileTree(ctx); err != nil {
+		return nil, err
+	}
+	if srcFs != f {
+		if err := f.ensureCurrentFileTree(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	endMutations := beginMutations(srcFs, f)
+	defer endMutations()
+
+	sourceAbs := joinPath(cleanPath(srcFs.relativeRootPath), srcObject.remote)
+	destAbs := joinPath(cleanPath(f.relativeRootPath), remote)
+	if sourceAbs == destAbs {
+		fileRef, err := f.studIPGetFileRef(ctx, srcObject.id)
+		if err != nil {
+			return nil, err
+		}
+		return f.objectFromFileRefData(remote, &fileRef.Data), nil
+	}
+
+	var sourceNode *Node
+	{
+		srcFs.mu.RLock()
+
+		if srcFs.ft.root != nil {
+			sourceNode = srcFs.ft.root.GetNodeAtPath(sourceAbs)
+		}
+
+		srcFs.mu.RUnlock()
+	}
+
+	if sourceNode == nil || sourceNode.IsDir {
+		return nil, fs.ErrorCantMove
+	}
+
+	fileRef, err := srcFs.studIPGetFileRef(ctx, srcObject.id)
+	if err != nil {
+		return nil, err
+	}
+
+	destName := basePath(destAbs)
+	if destName == "" {
+		return nil, fs.ErrorCantMove
+	}
+
+	destName = f.opt.Enc.FromStandardName(destName)
+
+	var moved *StudIPFileRefData
+	if dirPath(sourceAbs) == dirPath(destAbs) {
+		moved, err = f.studIPUpdateFileRef(
+			ctx,
+			srcObject.id,
+			destName,
+			fileRef.Data.Attributes.Description,
+			f.opt.License,
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		destParentNode, err := f.CreateParentDirectories(ctx, dirPath(destAbs))
+		if err != nil {
+			return nil, err
+		}
+
+		moved, err = f.studIPCreateFileRefByReference(
+			ctx,
+			destParentNode.ID,
+			fileRef.Data.Relationships.File.Data.ID,
+			destName,
+			fileRef.Data.Attributes.Description,
+			f.opt.License,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := srcFs.studIPDeleteFile(ctx, srcObject.id); err != nil {
+			if cleanupErr := f.studIPDeleteFile(ctx, moved.ID); cleanupErr != nil {
+				fs.Debugf(
+					f,
+					"Move: cleanup after delete failure failed newID=%q err=%v",
+					moved.ID,
+					cleanupErr,
+				)
+			}
+			return nil, err
+		}
+	}
+
+	if !f.moveNodeInTree(sourceAbs, destAbs, moved) {
+		f.fileTreeGenerationCounter().Add(1)
+	}
+
+	return f.objectFromFileRefData(remote, moved), nil
+}
+
+func (f *Fs) DirMove(
+	ctx context.Context,
+	src fs.Fs,
+	srcRemote string,
+	dstRemote string,
+) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	srcFs, ok := src.(*Fs)
+	if !ok || !f.sameCourse(srcFs) {
+		return fs.ErrorCantDirMove
+	}
+
+	srcRemote = cleanPath(srcRemote)
+	dstRemote = cleanPath(dstRemote)
+	if srcRemote == dstRemote {
+		return fs.ErrorDirExists
+	}
+
+	unlockCourses := lockMutationCourses(srcFs, f)
+	defer unlockCourses()
+
+	if err := srcFs.ensureCurrentFileTree(ctx); err != nil {
+		return err
+	}
+	if srcFs != f {
+		if err := f.ensureCurrentFileTree(ctx); err != nil {
+			return err
+		}
+	}
+
+	sourceAbs := joinPath(cleanPath(srcFs.relativeRootPath), srcRemote)
+	destAbs := joinPath(cleanPath(f.relativeRootPath), dstRemote)
+
+	var sourceNode *Node
+	var existingNode *Node
+	if srcFs.ft.root != nil {
+		srcFs.mu.RLock()
+		sourceNode = srcFs.ft.root.GetNodeAtPath(sourceAbs)
+		existingNode = srcFs.ft.root.GetNodeAtPath(destAbs)
+		srcFs.mu.RUnlock()
+	}
+
+	if existingNode != nil {
+		return fs.ErrorDirExists
+	}
+
+	if sourceNode == nil || !sourceNode.IsDir || sourceNode.Parent == nil {
+		return fs.ErrorCantDirMove
+	}
+
+	endMutations := beginMutations(srcFs, f)
+	defer endMutations()
+
+	destParentNode, err := f.CreateParentDirectories(ctx, dirPath(destAbs))
+	if err != nil {
+		return err
+	}
+
+	if err := f.studIPUpdateFolder(
+		ctx,
+		sourceNode.ID,
+		basePath(destAbs),
+		destParentNode.ID,
+	); err != nil {
+		return err
+	}
+
+	if !f.moveNodeInTree(sourceAbs, destAbs, nil) {
+		f.fileTreeGenerationCounter().Add(1)
+	}
+
+	return nil
 }
 
 func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {

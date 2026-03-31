@@ -30,12 +30,7 @@ type StudIPFoldersData struct {
 		IsSubfolderAllowed bool      `json:"is-subfolder-allowed"`
 	} `json:"attributes"`
 	Relationships struct {
-		Parent struct {
-			Data struct {
-				Type string `json:"type"`
-				ID   string `json:"id"`
-			} `json:"data"`
-		} `json:"parent"`
+		Parent StudIPRelationship `json:"parent"`
 	} `json:"relationships"`
 }
 
@@ -68,6 +63,46 @@ type StudIPFiles struct {
 			IsWritable     bool      `json:"is-writable"`
 		} `json:"attributes"`
 	} `json:"data"`
+}
+
+type StudIPResourceIdentifier struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+type StudIPRelationship struct {
+	Data StudIPResourceIdentifier `json:"data"`
+}
+
+type StudIPNullableRelationship struct {
+	Data *StudIPResourceIdentifier `json:"data"`
+}
+
+type StudIPFileRefData struct {
+	Type       string `json:"type"`
+	ID         string `json:"id"`
+	Attributes struct {
+		Name           string    `json:"name"`
+		Description    string    `json:"description"`
+		Mkdate         time.Time `json:"mkdate"`
+		Chdate         time.Time `json:"chdate"`
+		Downloads      int       `json:"downloads"`
+		Filesize       int64     `json:"filesize"`
+		MimeType       string    `json:"mime-type"`
+		IsReadable     bool      `json:"is-readable"`
+		IsDownloadable bool      `json:"is-downloadable"`
+		IsEditable     bool      `json:"is-editable"`
+		IsWritable     bool      `json:"is-writable"`
+	} `json:"attributes"`
+	Relationships struct {
+		File       StudIPRelationship         `json:"file"`
+		Parent     StudIPRelationship         `json:"parent"`
+		TermsOfUse StudIPNullableRelationship `json:"terms-of-use"`
+	} `json:"relationships"`
+}
+
+type StudIPFileRef struct {
+	Data StudIPFileRefData `json:"data"`
 }
 
 type StudIPCourses struct {

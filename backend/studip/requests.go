@@ -338,6 +338,289 @@ func (f *Fs) studIPGetCourse(ctx context.Context) (*StudIPCourses, error) {
 	return responseJSON, nil
 }
 
+func (f *Fs) studIPGetFileRef(
+	ctx context.Context,
+	fileRefID string,
+) (*StudIPFileRef, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	Assert(
+		f != nil,
+		fmt.Sprintf(
+			"f must be not nil; f=%q",
+			f,
+		),
+	)
+
+	if fileRefID == "" {
+		return nil, errors.New("fileRefID is empty")
+	}
+
+	URL := fmt.Sprintf("file-refs/%s", fileRefID)
+	responseJSON := new(StudIPFileRef)
+	res, err := f.client.CallJSON(
+		ctx,
+		&rest.Opts{Method: "GET", Path: URL},
+		nil,
+		responseJSON,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	return responseJSON, nil
+}
+
+func (f *Fs) studIPUpdateFileRef(
+	ctx context.Context,
+	fileRefID string,
+	name string,
+	description string,
+	termsOfUseID string,
+) (*StudIPFileRefData, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	Assert(
+		f != nil,
+		fmt.Sprintf(
+			"f must be not nil; f=%q",
+			f,
+		),
+	)
+
+	if fileRefID == "" {
+		return nil, errors.New("fileRefID is empty")
+	}
+
+	if name == "" {
+		return nil, errors.New("name is empty")
+	}
+
+	if termsOfUseID == "" {
+		return nil, errors.New("termsOfUseID is empty")
+	}
+
+	URL := fmt.Sprintf("file-refs/%s", fileRefID)
+
+	payload := struct {
+		Data struct {
+			Type       string `json:"type"`
+			Attributes struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"attributes"`
+			Relationships struct {
+				TermsOfUse struct {
+					Data struct {
+						Type string `json:"type"`
+						ID   string `json:"id"`
+					} `json:"data"`
+				} `json:"terms-of-use"`
+			} `json:"relationships"`
+		} `json:"data"`
+	}{}
+	payload.Data.Type = "file-refs"
+	payload.Data.Attributes.Name = name
+	payload.Data.Attributes.Description = description
+	payload.Data.Relationships.TermsOfUse.Data.Type = "terms-of-use"
+	payload.Data.Relationships.TermsOfUse.Data.ID = termsOfUseID
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	responseJSON := new(StudIPFileRef)
+	res, err := f.client.CallJSON(
+		ctx,
+		&rest.Opts{
+			Method:      "PATCH",
+			Path:        URL,
+			ContentType: "application/vnd.api+json",
+			Body:        bytes.NewReader(body),
+		},
+		nil,
+		responseJSON,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	return &responseJSON.Data, nil
+}
+
+func (f *Fs) studIPCreateFileRefByReference(
+	ctx context.Context,
+	parentFolderID string,
+	fileID string,
+	name string,
+	description string,
+	termsOfUseID string,
+) (*StudIPFileRefData, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	Assert(
+		f != nil,
+		fmt.Sprintf(
+			"f must be not nil; f=%q",
+			f,
+		),
+	)
+
+	if parentFolderID == "" {
+		return nil, errors.New("parentFolderID is empty")
+	}
+
+	if fileID == "" {
+		return nil, errors.New("fileID is empty")
+	}
+
+	if name == "" {
+		return nil, errors.New("name is empty")
+	}
+
+	if termsOfUseID == "" {
+		return nil, errors.New("termsOfUseID is empty")
+	}
+
+	URL := fmt.Sprintf("folders/%s/file-refs", parentFolderID)
+	apiName := f.opt.Enc.FromStandardName(name)
+
+	payload := struct {
+		Data struct {
+			Type       string `json:"type"`
+			Attributes struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			} `json:"attributes"`
+			Relationships struct {
+				File struct {
+					Data struct {
+						Type string `json:"type"`
+						ID   string `json:"id"`
+					} `json:"data"`
+				} `json:"file"`
+				TermsOfUse struct {
+					Data struct {
+						Type string `json:"type"`
+						ID   string `json:"id"`
+					} `json:"data"`
+				} `json:"terms-of-use"`
+			} `json:"relationships"`
+		} `json:"data"`
+	}{}
+	payload.Data.Type = "file-refs"
+	payload.Data.Attributes.Name = apiName
+	payload.Data.Attributes.Description = description
+	payload.Data.Relationships.File.Data.Type = "files"
+	payload.Data.Relationships.File.Data.ID = fileID
+	payload.Data.Relationships.TermsOfUse.Data.Type = "terms-of-use"
+	payload.Data.Relationships.TermsOfUse.Data.ID = termsOfUseID
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	responseJSON := new(StudIPFileRef)
+	res, err := f.client.CallJSON(
+		ctx,
+		&rest.Opts{
+			Method:      "POST",
+			Path:        URL,
+			ContentType: "application/vnd.api+json",
+			Body:        bytes.NewReader(body),
+		},
+		nil,
+		responseJSON,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	return &responseJSON.Data, nil
+}
+
+func (f *Fs) studIPUpdateFolder(
+	ctx context.Context,
+	folderID string,
+	name string,
+	parentFolderID string,
+) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	Assert(
+		f != nil,
+		fmt.Sprintf(
+			"f must be not nil; f=%q",
+			f,
+		),
+	)
+
+	if folderID == "" {
+		return errors.New("folderID is empty")
+	}
+	if name == "" && parentFolderID == "" {
+		return errors.New("name and parentFolderID are empty")
+	}
+
+	URL := fmt.Sprintf("folders/%s", folderID)
+	apiName := ""
+	if name != "" {
+		apiName = f.opt.Enc.FromStandardName(name)
+	}
+
+	data := map[string]any{
+		"type": "folders",
+	}
+	if name != "" {
+		data["attributes"] = map[string]any{
+			"name": apiName,
+		}
+	}
+	if parentFolderID != "" {
+		data["relationships"] = map[string]any{
+			"parent": map[string]any{
+				"data": map[string]any{
+					"type": "folders",
+					"id":   parentFolderID,
+				},
+			},
+		}
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"data": data,
+	})
+	if err != nil {
+		return err
+	}
+
+	res, err := f.client.Call(ctx, &rest.Opts{
+		Method:      "PATCH",
+		Path:        URL,
+		ContentType: "application/vnd.api+json",
+		Body:        bytes.NewReader(body),
+	})
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	return nil
+}
+
 func (f *Fs) studIPOpenFileContent(
 	ctx context.Context,
 	fileRefID string,
