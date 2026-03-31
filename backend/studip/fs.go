@@ -1339,7 +1339,7 @@ func (f *Fs) updateRelativeRootFromTree() {
 	fs.Debugf(f, "resolved relative root path=%q id=%q", rootNode.Path, rootNode.ID)
 }
 
-func (f *Fs) Rmdir(ctx context.Context, dir string) error {
+func (f *Fs) rmdir(ctx context.Context, dir string, purge bool) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -1393,18 +1393,21 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
-	if len(node.Children) > 0 {
-		if refreshErr := f.refreshFileTree(ctx); refreshErr != nil {
-			fs.Debugf(f, "Rmdir: refresh before empty check failed dir=%q err=%v", dir, refreshErr)
-		} else {
-			node, err = lookupNode()
-			if err != nil {
-				return err
-			}
-		}
 
+	if !purge {
 		if len(node.Children) > 0 {
-			return fs.ErrorDirectoryNotEmpty
+			if refreshErr := f.refreshFileTree(ctx); refreshErr != nil {
+				fs.Debugf(f, "Rmdir: refresh before empty check failed dir=%q err=%v", dir, refreshErr)
+			} else {
+				node, err = lookupNode()
+				if err != nil {
+					return err
+				}
+			}
+
+			if len(node.Children) > 0 {
+				return fs.ErrorDirectoryNotEmpty
+			}
 		}
 	}
 
@@ -1429,6 +1432,10 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	f.bumpTreeGenerationAndMarkCurrent()
 
 	return nil
+}
+
+func (f *Fs) Rmdir(ctx context.Context, dir string) error {
+	return f.rmdir(ctx, dir, false)
 }
 
 func (f *Fs) TestConnection(
@@ -1471,10 +1478,14 @@ func (f *Fs) Features() *fs.Features {
 	return (&fs.Features{
 		CanHaveEmptyDirectories: true,
 		CaseInsensitive:         true,
-		Copy:                    nil,
-		Purge:                   nil,
+		// TODO: Implement this
+		Copy: nil,
 	}).
 		Fill(context.Background(), f)
+}
+
+func (f *Fs) Purge(ctx context.Context, dir string) error {
+	return f.rmdir(ctx, dir, true)
 }
 
 func (f *Fs) Move(
