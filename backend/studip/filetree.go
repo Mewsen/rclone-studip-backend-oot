@@ -119,6 +119,9 @@ func (root *Node) GetNodeAtPath(path string) *Node {
 
 		found := false
 		for _, children := range currentNode.Children {
+			if children == nil {
+				continue
+			}
 			if strings.EqualFold(children.Name, pathSplit[0]) {
 				currentNode = children
 				pathSplit = pathSplit[1:]
@@ -147,7 +150,8 @@ func (ft *FileTree) ListEntries(fsys *Fs, dir string) (entries fs.DirEntries, er
 		return nil, fs.ErrorIsFile
 	}
 
-	node := ft.relativeRoot.GetNodeAtPath(dir)
+	var node *Node
+	node = ft.relativeRoot.GetNodeAtPath(dir)
 	if node == nil {
 		return nil, fs.ErrorDirNotFound
 	}
@@ -157,13 +161,10 @@ func (ft *FileTree) ListEntries(fsys *Fs, dir string) (entries fs.DirEntries, er
 	}
 
 	for _, child := range node.Children {
-		Assert(
-			child != nil,
-			fmt.Sprintf(
-				"child node must be not nil; dir=%q child=%q",
-				dir, child,
-			),
-		)
+		if child == nil {
+			fs.Debugf(fsys, "ListEntries: skipping nil child dir=%q", dir)
+			continue
+		}
 
 		Assert(
 			child.ID != "",

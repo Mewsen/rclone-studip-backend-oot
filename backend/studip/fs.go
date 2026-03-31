@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rclone/rclone/fs"
@@ -29,9 +30,22 @@ type Fs struct {
 	opt    *Options
 	client *rest.Client
 	// This is the path that rclone uses as the root
-	relativeRootPath string
-	ft               FileTree
-	mu               sync.Mutex
+	relativeRootPath      string
+	ft                    FileTree
+	treeGeneration        uint64
+	treeRefreshGeneration uint64
+	activeMutations       atomic.Int64
+	// mu guards in-memory file tree reads and writes.
+	mu sync.RWMutex
+}
+
+var fileTreeGenerations sync.Map
+var fileTreeSnapshots sync.Map
+var fileTreeMutationLocks sync.Map
+
+type fileTreeSnapshot struct {
+	generation uint64
+	root       *Node
 }
 
 func NewFs(
@@ -49,6 +63,7 @@ func NewFs(
 	opt := new(Options)
 	if err := configstruct.Set(m, opt); err != nil {
 		fs.Debugf(name, "failed to parse backend config: %v", err)
+
 		return nil, err
 	}
 
@@ -84,11 +99,11 @@ func NewFs(
 
 		// ---- Request ----
 		if req != nil {
-			b.WriteString(fmt.Sprintf("Request: %s %s\n", req.Method, req.URL.String()))
+			fmt.Fprintf(&b, "Request: %s %s\n", req.Method, req.URL.String())
 
 			b.WriteString("Request Headers:\n")
 			for k, v := range req.Header {
-				b.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+				fmt.Fprintf(&b, "  %s: %v\n", k, v)
 			}
 
 			if req.Body != nil {
@@ -107,11 +122,11 @@ func NewFs(
 		}
 
 		// ---- Response ----
-		b.WriteString(fmt.Sprintf("Response Status: %s\n", resp.Status))
+		fmt.Fprintf(&b, "Response Status: %s\n", resp.Status)
 
 		b.WriteString("Response Headers:\n")
 		for k, v := range resp.Header {
-			b.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+			fmt.Fprintf(&b, "  %s: %v\n", k, v)
 		}
 
 		defer resp.Body.Close()
@@ -150,15 +165,22 @@ func NewFs(
 	fs.Debugf(f, "connection test successful")
 
 	fs.Debugf(f, "building course file tree")
-	f.ft.root, err = f.GetCourseFileTree(ctx)
-	if err != nil {
-		return nil, err
+	f.ft.root = f.clonedSnapshotForCurrentGeneration()
+	if f.ft.root == nil {
+		f.ft.root, err = f.GetCourseFileTree(ctx)
+		if err != nil {
+			return nil, err
+		}
+		f.storeFileTreeSnapshot(f.ft.root, f.fileTreeGenerationCounter().Load())
 	}
 
 	fs.Debugf(f, "course file tree initialized")
 
 	if rootPath == "" {
 		f.ft.relativeRoot = f.ft.root
+		f.treeGeneration = f.fileTreeGenerationCounter().Load()
+		f.treeRefreshGeneration = f.treeGeneration
+
 		return f, nil
 	}
 
@@ -171,12 +193,282 @@ func NewFs(
 		if !f.ft.relativeRoot.IsDir {
 			f.ft.relativeRoot = f.ft.relativeRoot.Parent
 			f.relativeRootPath = dirPath(f.relativeRootPath)
+			f.treeGeneration = f.fileTreeGenerationCounter().Load()
+			f.treeRefreshGeneration = f.treeGeneration
+
 			return f, fs.ErrorIsFile
 		}
 	}
 
+	f.treeGeneration = f.fileTreeGenerationCounter().Load()
+	f.treeRefreshGeneration = f.treeGeneration
 	return f, nil
 }
+
+func cloneNode(root *Node, parent *Node) *Node {
+	if root == nil {
+		return nil
+	}
+
+	cloned := &Node{
+		Parent:             parent,
+		Name:               root.Name,
+		Path:               root.Path,
+		ID:                 root.ID,
+		IsReadable:         root.IsReadable,
+		IsWritable:         root.IsWritable,
+		IsDownloadable:     root.IsDownloadable,
+		IsEditable:         root.IsEditable,
+		IsSubfolderAllowed: root.IsSubfolderAllowed,
+		IsDir:              root.IsDir,
+		ChDate:             root.ChDate,
+		Size:               root.Size,
+		ContentType:        root.ContentType,
+	}
+
+	if len(root.Children) == 0 {
+		return cloned
+	}
+
+	cloned.Children = make([]*Node, 0, len(root.Children))
+	for _, child := range root.Children {
+		if child == nil {
+			cloned.Children = append(cloned.Children, nil)
+			continue
+		}
+		cloned.Children = append(cloned.Children, cloneNode(child, cloned))
+	}
+
+	return cloned
+}
+
+func (f *Fs) fileTreeKey() string {
+	return f.opt.BaseURL + "|" + f.opt.CourseID
+}
+
+func (f *Fs) fileTreeGenerationCounter() *atomic.Uint64 {
+	key := f.fileTreeKey()
+	counterAny, _ := fileTreeGenerations.LoadOrStore(key, &atomic.Uint64{})
+
+	return counterAny.(*atomic.Uint64)
+}
+
+func (f *Fs) fileTreeMutationLock() *sync.Mutex {
+	key := f.fileTreeKey()
+	lockAny, _ := fileTreeMutationLocks.LoadOrStore(key, &sync.Mutex{})
+
+	return lockAny.(*sync.Mutex)
+}
+
+func (f *Fs) markTreeCurrent(generation uint64) {
+	f.treeGeneration = generation
+	f.treeRefreshGeneration = generation
+}
+
+// Caller must hold f.mu.
+func (f *Fs) bumpTreeGenerationAndMarkCurrent() uint64 {
+	generation := f.fileTreeGenerationCounter().Add(1)
+	f.markTreeCurrent(generation)
+	f.storeCurrentFileTreeSnapshotLocked(generation)
+
+	return generation
+}
+
+func (f *Fs) clonedSnapshotForCurrentGeneration() *Node {
+	key := f.fileTreeKey()
+	snapshotAny, ok := fileTreeSnapshots.Load(key)
+	if !ok {
+		return nil
+	}
+
+	snapshot := snapshotAny.(*fileTreeSnapshot)
+	current := f.fileTreeGenerationCounter().Load()
+	if snapshot.generation != current || snapshot.root == nil {
+		return nil
+	}
+
+	return cloneNode(snapshot.root, nil)
+}
+
+func (f *Fs) storeFileTreeSnapshot(root *Node, generation uint64) {
+	if root == nil {
+		return
+	}
+
+	fileTreeSnapshots.Store(
+		f.fileTreeKey(),
+		&fileTreeSnapshot{
+			generation: generation,
+			root:       cloneNode(root, nil),
+		},
+	)
+}
+
+func (f *Fs) storeCurrentFileTreeSnapshotLocked(generation uint64) {
+	if f.ft.root == nil {
+		return
+	}
+
+	f.storeFileTreeSnapshot(f.ft.root, generation)
+}
+
+func (f *Fs) beginMutation() {
+	f.activeMutations.Add(1)
+}
+
+func (f *Fs) endMutation() {
+	f.activeMutations.Add(-1)
+}
+
+func (f *Fs) hasActiveMutations() bool {
+	return f.activeMutations.Load() != 0
+}
+
+func (f *Fs) fileTreeNeedsRefresh() bool {
+	if f.hasActiveMutations() {
+		return false
+	}
+
+	current := f.fileTreeGenerationCounter().Load()
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	return f.treeGeneration != current || f.treeRefreshGeneration != f.treeGeneration
+}
+
+func (f *Fs) refreshFileTree(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	root := f.clonedSnapshotForCurrentGeneration()
+	if root == nil {
+		var err error
+		root, err = f.GetCourseFileTree(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.ft.root = root
+	generation := f.fileTreeGenerationCounter().Load()
+	f.treeGeneration = generation
+	f.treeRefreshGeneration = generation
+	f.ft.relativeRoot = nil
+	if f.relativeRootPath == "" {
+		f.ft.relativeRoot = root
+		f.storeCurrentFileTreeSnapshotLocked(generation)
+		return nil
+	}
+
+	f.ft.relativeRoot = root.GetNodeAtPath(f.relativeRootPath)
+	if f.ft.relativeRoot != nil && !f.ft.relativeRoot.IsDir {
+		f.ft.relativeRoot = f.ft.relativeRoot.Parent
+	}
+
+	f.storeCurrentFileTreeSnapshotLocked(generation)
+
+	return nil
+}
+
+func (f *Fs) ensureCurrentFileTree(ctx context.Context) error {
+	if !f.fileTreeNeedsRefresh() {
+		return nil
+	}
+	return f.refreshFileTree(ctx)
+}
+
+func (f *Fs) sameCourse(other *Fs) bool {
+	return f != nil &&
+		other != nil &&
+		f.opt != nil &&
+		other.opt != nil &&
+		f.opt.BaseURL == other.opt.BaseURL &&
+		f.opt.CourseID == other.opt.CourseID
+}
+
+func beginMutations(fss ...*Fs) func() {
+	seen := make(map[*Fs]struct{}, len(fss))
+	order := make([]*Fs, 0, len(fss))
+
+	for _, fsys := range fss {
+		if fsys == nil {
+			continue
+		}
+		if _, ok := seen[fsys]; ok {
+			continue
+		}
+		seen[fsys] = struct{}{}
+		fsys.beginMutation()
+		order = append(order, fsys)
+	}
+
+	return func() {
+		for i := len(order) - 1; i >= 0; i-- {
+			order[i].endMutation()
+		}
+	}
+}
+
+func lockMutationCourses(fss ...*Fs) func() {
+	type courseLock struct {
+		key string
+		mu  *sync.Mutex
+	}
+
+	seen := make(map[string]struct{}, len(fss))
+	locks := make([]courseLock, 0, len(fss))
+
+	for _, fsys := range fss {
+		if fsys == nil || fsys.opt == nil {
+			continue
+		}
+		key := fsys.fileTreeKey()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		locks = append(locks, courseLock{
+			key: key,
+			mu:  fsys.fileTreeMutationLock(),
+		})
+	}
+
+	slices.SortFunc(locks, func(a, b courseLock) int {
+		return strings.Compare(a.key, b.key)
+	})
+
+	for _, lock := range locks {
+		lock.mu.Lock()
+	}
+
+	return func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			locks[i].mu.Unlock()
+		}
+	}
+}
+
+func updateSubtreePaths(node *Node) {
+	if node == nil {
+		return
+	}
+
+	if node.Parent != nil {
+		node.Path = joinPath(node.Parent.Path, node.Name)
+	}
+
+	for _, child := range node.Children {
+		if child == nil {
+			continue
+		}
+		updateSubtreePaths(child)
+	}
+}
+
 
 func (f *Fs) GetCourseFileTree(
 	ctx context.Context,
@@ -415,6 +707,16 @@ func (f *Fs) Put(
 		return nil, fmt.Errorf("invalid remote path %q", remotePath)
 	}
 
+	unlockCourses := lockMutationCourses(f)
+	defer unlockCourses()
+
+	if err := f.ensureCurrentFileTree(ctx); err != nil {
+		return nil, err
+	}
+
+	f.beginMutation()
+	defer f.endMutation()
+
 	existingAny, err := f.NewObject(ctx, remotePath)
 	if err == nil {
 		existing, ok := existingAny.(*Object)
@@ -447,6 +749,8 @@ func (f *Fs) Put(
 		existing.size = src.Size()
 		existing.modTime = src.ModTime(ctx)
 		existing.contentType = fs.MimeType(ctx, src)
+
+		f.mu.Lock()
 		if f.ft.relativeRoot != nil {
 			if node := f.ft.relativeRoot.GetNodeAtPath(remotePath); node != nil && !node.IsDir {
 				node.ID = existing.id
@@ -455,6 +759,8 @@ func (f *Fs) Put(
 				node.ContentType = existing.contentType
 			}
 		}
+		f.bumpTreeGenerationAndMarkCurrent()
+		f.mu.Unlock()
 
 		err = existing.SetTermsOfUse(ctx, f.opt.License)
 		if err != nil {
@@ -488,12 +794,8 @@ func (f *Fs) Put(
 
 	parentDir := dirPath(remotePath)
 	cleanRoot := cleanPath(f.relativeRootPath)
-	parentDirForCreation := parentDir
-	if f.ft.relativeRoot == nil {
-		parentDirForCreation = joinPath(cleanRoot, parentDir)
-	}
 
-	directoryNode, err := f.CreateParentDirectories(ctx, parentDirForCreation)
+	directoryNode, err := f.CreateParentDirectories(ctx, joinPath(cleanRoot, parentDir))
 	if err != nil {
 		return nil, err
 	}
@@ -529,6 +831,8 @@ func (f *Fs) Put(
 	}
 
 	filename := basePath(remotePath)
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	updatedNode := false
 	for _, child := range directoryNode.Children {
 		if child == nil || child.IsDir || !strings.EqualFold(child.Name, filename) {
@@ -564,6 +868,7 @@ func (f *Fs) Put(
 			ContentType:    object.contentType,
 		})
 	}
+	f.bumpTreeGenerationAndMarkCurrent()
 
 	return object, nil
 }
@@ -581,17 +886,27 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 		),
 	)
 
-	fs.Infof(f, "Mkdir f.root=%q dir=%q", f.relativeRootPath, dir)
+	unlockCourses := lockMutationCourses(f)
+	defer unlockCourses()
 
+	if err := f.ensureCurrentFileTree(ctx); err != nil {
+		return err
+	}
+
+	f.beginMutation()
+	defer f.endMutation()
 	var parentNode *Node
 	var dirname string
 	var err error
 
 	// creating relativeRoot
 	if dir == "" {
-		if f.ft.relativeRoot == nil {
+		f.mu.RLock()
+		relativeRootReady := f.ft.relativeRoot != nil
+		f.mu.RUnlock()
+		if !relativeRootReady {
 			fs.Debugf(f, "Mkdir: rootNode nil, creating parent chain for %q", dirPath(f.relativeRootPath))
-			parentNode, err = f.CreateParentDirectories(ctx, dirPath(f.relativeRootPath))
+			parentNode, err = f.CreateParentDirectories(ctx, dirPath(cleanPath(f.relativeRootPath)))
 			if err != nil {
 				return err
 			}
@@ -602,12 +917,14 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 	} else {
 		// creating dir inside relativeRoot
 		dirname = basePath(dir)
+		f.mu.RLock()
 		if f.ft.relativeRoot != nil {
 			parentNode = f.ft.relativeRoot.GetNodeAtPath(dirPath(dir))
 		}
+		f.mu.RUnlock()
 		if parentNode == nil {
 			fs.Debugf(f, "Mkdir: parent missing for %q, creating chain", dir)
-			parentNode, err = f.CreateParentDirectories(ctx, dirPath(dir))
+			parentNode, err = f.CreateParentDirectories(ctx, joinPath(cleanPath(f.relativeRootPath), dirPath(dir)))
 			if err != nil {
 				return err
 			}
@@ -642,10 +959,12 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 		dirname,
 	)
 
-	// is this needed?
+	f.mu.RLock()
 	if f.findDirectoryNodeByName(parentNode, dirname) != nil {
+		f.mu.RUnlock()
 		return nil
 	}
+	f.mu.RUnlock()
 
 	fs.Debugf(f, "Mkdir: creating directory %q under parent id=%q", dirname, parentNode.ID)
 	apiDirname := f.opt.Enc.FromStandardName(dirname)
@@ -674,7 +993,8 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 		Size:               -1,
 	}
 
-	// is this needed?
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.findDirectoryNodeByName(parentNode, dirname) != nil {
 		return nil
 	}
@@ -682,6 +1002,7 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 	parentNode.Children = append(parentNode.Children, createdDirectoryNode)
 
 	f.updateRelativeRootFromTree()
+	f.bumpTreeGenerationAndMarkCurrent()
 
 	return nil
 }
@@ -712,7 +1033,7 @@ func (f *Fs) findDirectoryNodeByName(parentNode *Node, name string) *Node {
 	)
 
 	for _, child := range parentNode.Children {
-		if child.IsDir && strings.EqualFold(child.Name, name) {
+		if child != nil && child.IsDir && strings.EqualFold(child.Name, name) {
 			return child
 		}
 	}
@@ -767,10 +1088,11 @@ func (f *Fs) findDirectoryByName(
 	return StudIPFoldersData{}, fs.ErrorDirNotFound
 }
 
-// This is for creating the parent directories for a non existing directory
+// CreateParentDirectories creates missing directory segments for a path relative
+// to the course root, regardless of the current relative root state.
 func (f *Fs) CreateParentDirectories(
 	ctx context.Context,
-	dir string,
+	targetPath string,
 ) (*Node, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -787,12 +1109,7 @@ func (f *Fs) CreateParentDirectories(
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	var targetPath string
-	if f.ft.relativeRoot != nil {
-		targetPath = joinPath(f.relativeRootPath, dir)
-	} else {
-		targetPath = dir
-	}
+	targetPath = cleanPath(targetPath)
 	fs.Debugf(f, "CreateParentDirectories: normalized targetPath=%q", targetPath)
 
 	targetNode := f.ft.root.GetNodeAtPath(targetPath)
@@ -815,6 +1132,7 @@ func (f *Fs) CreateParentDirectories(
 
 	stack := NewStack[string]()
 	currentPath := targetPath
+	createdAny := false
 
 	for {
 		candidate := f.ft.root.GetNodeAtPath(currentPath)
@@ -891,6 +1209,7 @@ func (f *Fs) CreateParentDirectories(
 
 		targetNode.Children = append(targetNode.Children, createdNode)
 		targetNode = createdNode
+		createdAny = true
 	}
 	fs.Debugf(
 		f,
@@ -899,6 +1218,9 @@ func (f *Fs) CreateParentDirectories(
 		targetNode.ID,
 	)
 	f.updateRelativeRootFromTree()
+	if createdAny {
+		f.bumpTreeGenerationAndMarkCurrent()
+	}
 
 	return targetNode, nil
 }
@@ -952,42 +1274,81 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 		),
 	)
 
-	if f.ft.relativeRoot == nil {
-		return fs.ErrorDirNotFound
+	unlockCourses := lockMutationCourses(f)
+	defer unlockCourses()
+
+	if f.fileTreeNeedsRefresh() {
+		if err := f.refreshFileTree(ctx); err != nil {
+			fs.Debugf(f, "Rmdir: refresh before lookup failed dir=%q err=%v", dir, err)
+		}
 	}
 
-	node := f.ft.relativeRoot.GetNodeAtPath(dir)
-	if node == nil {
-		return fs.ErrorDirNotFound
+	f.beginMutation()
+	defer f.endMutation()
+
+	lookupNode := func() (*Node, error) {
+		f.mu.RLock()
+		defer f.mu.RUnlock()
+
+		if f.ft.relativeRoot == nil {
+			return nil, fs.ErrorDirNotFound
+		}
+
+		node := f.ft.relativeRoot.GetNodeAtPath(dir)
+		if node == nil {
+			return nil, fs.ErrorDirNotFound
+		}
+
+		if !node.IsEditable {
+			return nil, fs.ErrorPermissionDenied
+		}
+
+		// if Directory is root
+		if node.Parent == nil && node.Name == f.ft.root.Name && node.Path == f.ft.root.Path {
+			return nil, fs.ErrorCantPurge
+		}
+
+		return node, nil
 	}
 
-	if !node.IsEditable {
-		return fs.ErrorPermissionDenied
+	node, err := lookupNode()
+	if err != nil {
+		return err
 	}
-
-	// if Directory is root
-	if node.Parent == nil && node.Name == f.ft.root.Name && node.Path == f.ft.root.Path {
-		return fs.ErrorCantPurge
-	}
-
 	if len(node.Children) > 0 {
-		return fs.ErrorDirectoryNotEmpty
+		if refreshErr := f.refreshFileTree(ctx); refreshErr != nil {
+			fs.Debugf(f, "Rmdir: refresh before empty check failed dir=%q err=%v", dir, refreshErr)
+		} else {
+			node, err = lookupNode()
+			if err != nil {
+				return err
+			}
+		}
+
+		if len(node.Children) > 0 {
+			return fs.ErrorDirectoryNotEmpty
+		}
 	}
 
-	err := f.studIPDeleteFolder(ctx, node.ID)
+	err = f.studIPDeleteFolder(ctx, node.ID)
 	if err != nil {
 		return err
 	}
 
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	// if the deleted node was the relativeRootPath we have to nil it
-	if f.ft.relativeRoot.ID == node.ID {
+	if f.ft.relativeRoot != nil && f.ft.relativeRoot.ID == node.ID {
 		f.ft.relativeRoot = nil
 	}
 
-	index := slices.Index(node.Parent.Children, node)
-	if index >= 0 {
-		node.Parent.Children = slices.Delete(node.Parent.Children, index, index+1)
+	if node.Parent != nil {
+		index := slices.Index(node.Parent.Children, node)
+		if index >= 0 {
+			node.Parent.Children = slices.Delete(node.Parent.Children, index, index+1)
+		}
 	}
+	f.bumpTreeGenerationAndMarkCurrent()
 
 	return nil
 }
@@ -1057,11 +1418,6 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	)
 
 	fs.Debugf(f, "NewObject: start remote=%q", remote)
-	if f == nil || f.ft.relativeRoot == nil {
-		fs.Debugf(f, "NewObject: relative root is not available")
-		return nil, fs.ErrorObjectNotFound
-	}
-
 	remote = cleanPath(remote)
 	fs.Debugf(f, "NewObject: normalized remote=%q", remote)
 	if remote == "" {
@@ -1069,30 +1425,62 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 		return nil, fs.ErrorObjectNotFound
 	}
 
-	node := f.ft.relativeRoot.GetNodeAtPath(remote)
-	if node == nil || node.IsDir || node.ID == "" {
-		if node == nil {
+	if f.fileTreeNeedsRefresh() {
+		if err := f.refreshFileTree(ctx); err != nil {
+			fs.Debugf(f, "NewObject: refresh before lookup failed remote=%q err=%v", remote, err)
+		}
+	}
+
+	var (
+		object              *Object
+		relativeRootMissing bool
+		nodeMissing         bool
+		nodeIsDir           bool
+		nodeIDMissing       bool
+	)
+
+	f.mu.RLock()
+	if f.ft.relativeRoot == nil {
+		relativeRootMissing = true
+	} else {
+		node := f.ft.relativeRoot.GetNodeAtPath(remote)
+		switch {
+		case node == nil:
+			nodeMissing = true
+		case node.IsDir:
+			nodeIsDir = true
+		case node.ID == "":
+			nodeIDMissing = true
+		default:
+			object = &Object{
+				fs:             f,
+				remote:         remote,
+				id:             node.ID,
+				size:           node.Size,
+				isReadable:     node.IsReadable,
+				isEditable:     node.IsEditable,
+				isWritable:     node.IsWritable,
+				IsDownloadable: node.IsDownloadable,
+				contentType:    node.ContentType,
+				modTime:        node.ChDate,
+			}
+		}
+	}
+	f.mu.RUnlock()
+
+	if object == nil {
+		if relativeRootMissing {
+			fs.Debugf(f, "NewObject: relative root is not available for %q", remote)
+		} else if nodeMissing {
 			fs.Debugf(f, "NewObject: node not found for %q", remote)
-		} else if node.IsDir {
+		} else if nodeIsDir {
 			fs.Debugf(f, "NewObject: path %q is a directory", remote)
-		} else {
+		} else if nodeIDMissing {
 			fs.Debugf(f, "NewObject: node for %q has empty id", remote)
 		}
 		return nil, fs.ErrorObjectNotFound
 	}
 
-	object := &Object{
-		fs:             f,
-		remote:         remote,
-		id:             node.ID,
-		size:           node.Size,
-		isReadable:     node.IsReadable,
-		isEditable:     node.IsEditable,
-		isWritable:     node.IsWritable,
-		IsDownloadable: node.IsDownloadable,
-		contentType:    node.ContentType,
-		modTime:        node.ChDate,
-	}
 	fs.Debugf(
 		f,
 		"NewObject: resolved remote=%q id=%q size=%d contentType=%q",
@@ -1123,7 +1511,26 @@ func (f *Fs) List(
 
 	fs.Debugf(f, "List: start dir=%q rootPath=%q", dir, f.relativeRootPath)
 
-	entries, err = f.ft.ListEntries(f, dir)
+	if f.fileTreeNeedsRefresh() {
+		if err := f.refreshFileTree(ctx); err != nil {
+			fs.Debugf(f, "List: refresh before lookup failed dir=%q err=%v", dir, err)
+		}
+	}
+
+	fixCase := fs.GetConfig(ctx).FixCase
+	listEntries := func() (fs.DirEntries, error) {
+		f.mu.RLock()
+		defer f.mu.RUnlock()
+		if fixCase {
+			entries, err := f.ft.ListEntries(f, dir)
+			if err == nil || !errors.Is(err, fs.ErrorDirNotFound) {
+				return entries, err
+			}
+		}
+		return f.ft.ListEntries(f, dir)
+	}
+
+	entries, err = listEntries()
 	if err != nil {
 		fs.Debugf(f, "List: failed dir=%q err=%v", dir, err)
 		return nil, err

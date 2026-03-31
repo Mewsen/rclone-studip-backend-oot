@@ -159,6 +159,16 @@ func (o *Object) Update(
 	srcRemote := src.Remote()
 	fs.Debugf(o.fs, "Object.Update: start srcRemote=%q fields={%s}", srcRemote, o.fieldsForLog())
 
+	unlockCourses := lockMutationCourses(o.fs)
+	defer unlockCourses()
+
+	if err := o.fs.ensureCurrentFileTree(ctx); err != nil {
+		return err
+	}
+
+	o.fs.beginMutation()
+	defer o.fs.endMutation()
+
 	if !o.isEditable || !o.isWritable {
 		fs.Debugf(o.fs, "Object.Update: permission denied srcRemote=%q fields={%s}", srcRemote, o.fieldsForLog())
 		return fs.ErrorPermissionDenied
@@ -199,6 +209,7 @@ func (o *Object) Update(
 	o.modTime = src.ModTime(ctx)
 	o.contentType = fs.MimeType(ctx, src)
 
+	o.fs.mu.Lock()
 	if o.fs.ft.relativeRoot != nil {
 		if node := o.fs.ft.relativeRoot.GetNodeAtPath(o.remote); node != nil && !node.IsDir {
 			node.ID = o.id
@@ -207,6 +218,8 @@ func (o *Object) Update(
 			node.ContentType = o.contentType
 		}
 	}
+	o.fs.bumpTreeGenerationAndMarkCurrent()
+	o.fs.mu.Unlock()
 
 	err = o.SetTermsOfUse(ctx, o.fs.opt.License)
 	if err != nil {
@@ -222,7 +235,7 @@ func (o *Object) recreateForSizeChangingUpdate(
 	in io.Reader,
 	src fs.ObjectInfo,
 ) (string, error) {
-	parentNode, err := o.fs.CreateParentDirectories(ctx, dirPath(o.remote))
+	parentNode, err := o.fs.CreateParentDirectories(ctx, joinPath(cleanPath(o.fs.relativeRootPath), dirPath(o.remote)))
 	if err != nil {
 		return "", err
 	}
@@ -254,6 +267,7 @@ func (o *Object) recreateForSizeChangingUpdate(
 	o.modTime = src.ModTime(ctx)
 	o.contentType = fs.MimeType(ctx, src)
 
+	o.fs.mu.Lock()
 	if o.fs.ft.relativeRoot != nil {
 		if node := o.fs.ft.relativeRoot.GetNodeAtPath(o.remote); node != nil && !node.IsDir {
 			node.ID = o.id
@@ -262,6 +276,8 @@ func (o *Object) recreateForSizeChangingUpdate(
 			node.ContentType = o.contentType
 		}
 	}
+	o.fs.bumpTreeGenerationAndMarkCurrent()
+	o.fs.mu.Unlock()
 
 	err = o.SetTermsOfUse(ctx, o.fs.opt.License)
 	if err != nil {
@@ -356,6 +372,16 @@ func (o *Object) Remove(ctx context.Context) error {
 
 	fs.Debugf(o.fs, "Object.Remove: start fields={%s}", o.fieldsForLog())
 
+	unlockCourses := lockMutationCourses(o.fs)
+	defer unlockCourses()
+
+	if err := o.fs.ensureCurrentFileTree(ctx); err != nil {
+		return err
+	}
+
+	o.fs.beginMutation()
+	defer o.fs.endMutation()
+
 	if !o.isEditable && !o.isWritable {
 		fs.Debugf(o.fs, "Object.Remove: permission denied fields={%s}", o.fieldsForLog())
 		return fs.ErrorPermissionDenied
@@ -367,20 +393,43 @@ func (o *Object) Remove(ctx context.Context) error {
 		return err
 	}
 
-	var parent *Node
-	if o.fs.ft.relativeRoot != nil {
-		parentDir := dirPath(o.remote)
-		parent = o.fs.ft.relativeRoot.GetNodeAtPath(parentDir)
-	}
-
-	if parent != nil {
-		filename := basePath(o.remote)
-		for i, child := range parent.Children {
-			if child != nil && !child.IsDir && strings.EqualFold(child.Name, filename) {
-				parent.Children = slices.Delete(parent.Children, i, i+1)
-				break
+	o.fs.mu.Lock()
+	defer o.fs.mu.Unlock()
+	removed := false
+	if o.fs.ft.root != nil {
+		absoluteRemote := joinPath(cleanPath(o.fs.relativeRootPath), o.remote)
+		node := o.fs.ft.root.GetNodeAtPath(absoluteRemote)
+		if node == nil {
+			node = o.fs.ft.root.GetNodeAtPath(absoluteRemote)
+		}
+		if node != nil && node.Parent != nil {
+			index := slices.Index(node.Parent.Children, node)
+			if index >= 0 {
+				node.Parent.Children = slices.Delete(node.Parent.Children, index, index+1)
+				removed = true
 			}
 		}
+	}
+
+	if !removed && o.fs.ft.relativeRoot != nil {
+		parentDir := dirPath(o.remote)
+		parent := o.fs.ft.relativeRoot.GetNodeAtPath(parentDir)
+		if parent != nil {
+			filename := basePath(o.remote)
+			for i, child := range parent.Children {
+				if child != nil && !child.IsDir && strings.EqualFold(child.Name, filename) {
+					parent.Children = slices.Delete(parent.Children, i, i+1)
+					removed = true
+					break
+				}
+			}
+		}
+	}
+
+	if removed {
+		o.fs.bumpTreeGenerationAndMarkCurrent()
+	} else {
+		o.fs.fileTreeGenerationCounter().Add(1)
 	}
 
 	fs.Debugf(o.fs, "Object.Remove: success fields={%s}", o.fieldsForLog())

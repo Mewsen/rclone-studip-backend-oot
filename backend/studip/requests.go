@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/lib/rest"
@@ -102,6 +103,24 @@ func (f *Fs) studIPMkDir(
 	return nil
 }
 
+func pagedPath(basePath string, offset, limit int) string {
+	values := url.Values{}
+	values.Set("page[offset]", strconv.Itoa(offset))
+	values.Set("page[limit]", strconv.Itoa(limit))
+	return basePath + "?" + values.Encode()
+}
+
+func nextPageLimit(limit, loaded int) int {
+	switch {
+	case limit > 0:
+		return limit
+	case loaded > 0:
+		return loaded
+	default:
+		return 30
+	}
+}
+
 func (f *Fs) studIPGetFoldersOfFolder(
 	ctx context.Context,
 	folderID string,
@@ -131,6 +150,27 @@ func (f *Fs) studIPGetFoldersOfFolder(
 		return nil, err
 	}
 	defer res.Body.Close()
+
+	for len(responseJSON.Data) < responseJSON.Meta.Page.Total {
+		offset := len(responseJSON.Data)
+		limit := nextPageLimit(responseJSON.Meta.Page.Limit, len(responseJSON.Data))
+		page := &StudIPFolders{}
+		res, err := f.client.CallJSON(
+			ctx,
+			&rest.Opts{Method: "GET", Path: pagedPath(URL, offset, limit)},
+			nil,
+			page,
+		)
+		if err != nil {
+			return nil, err
+		}
+		res.Body.Close()
+		if len(page.Data) == 0 {
+			break
+		}
+		responseJSON.Data = append(responseJSON.Data, page.Data...)
+		responseJSON.Meta = page.Meta
+	}
 
 	return responseJSON, nil
 }
@@ -165,6 +205,28 @@ func (f *Fs) studIPGetFilesOfFolder(
 	}
 	defer res.Body.Close()
 
+	for len(responseJSON.Data) < responseJSON.Meta.Page.Total {
+		offset := len(responseJSON.Data)
+		limit := nextPageLimit(responseJSON.Meta.Page.Limit, len(responseJSON.Data))
+		page := &StudIPFiles{}
+		res, err := f.client.CallJSON(
+			ctx,
+			&rest.Opts{Method: "GET", Path: pagedPath(URL, offset, limit)},
+			nil,
+			page,
+		)
+		if err != nil {
+			return nil, err
+		}
+		res.Body.Close()
+		if len(page.Data) == 0 {
+			break
+		}
+		responseJSON.Data = append(responseJSON.Data, page.Data...)
+		responseJSON.Meta = page.Meta
+		responseJSON.Links = page.Links
+	}
+
 	return responseJSON, nil
 }
 
@@ -194,6 +256,27 @@ func (f *Fs) studIPGetCourseFolders(ctx context.Context) (*StudIPFolders, error)
 		return nil, err
 	}
 	defer res.Body.Close()
+
+	for len(responseJSON.Data) < responseJSON.Meta.Page.Total {
+		offset := len(responseJSON.Data)
+		limit := nextPageLimit(responseJSON.Meta.Page.Limit, len(responseJSON.Data))
+		page := &StudIPFolders{}
+		res, err := f.client.CallJSON(
+			ctx,
+			&rest.Opts{Method: "GET", Path: pagedPath(URL, offset, limit)},
+			nil,
+			page,
+		)
+		if err != nil {
+			return nil, err
+		}
+		res.Body.Close()
+		if len(page.Data) == 0 {
+			break
+		}
+		responseJSON.Data = append(responseJSON.Data, page.Data...)
+		responseJSON.Meta = page.Meta
+	}
 
 	return responseJSON, nil
 }
@@ -569,6 +652,13 @@ func (f *Fs) studIPDeleteFile(ctx context.Context, fileRefID string) error {
 		Path:   URL,
 	})
 	if err != nil {
+		if res != nil {
+			defer res.Body.Close()
+			if res.StatusCode == http.StatusNotFound {
+				fs.Debugf(f, "studIPDeleteFile: ignoring missing file-ref id=%q", fileRefID)
+				return nil
+			}
+		}
 		return err
 	}
 	defer res.Body.Close()
