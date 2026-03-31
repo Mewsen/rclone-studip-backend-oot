@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/Mewsen/rclone-studip-backend-oot/compare/v1.1.0...v1.2.0) (2026-03-31)
+
+
+### Features
+
+* add Purge ([21beb6a](https://github.com/Mewsen/rclone-studip-backend-oot/commit/21beb6a683652e4e8b72318826fcec19c5418b48))
+
 ## [1.1.0](https://github.com/Mewsen/rclone-studip-backend-oot/compare/v1.0.0...v1.1.0) (2026-03-31)
 
 
