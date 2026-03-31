@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/Mewsen/rclone-studip-backend-oot/compare/v1.0.0...v1.1.0) (2026-03-31)
+
+
+### Features
+
+* server-side move ([459bac3](https://github.com/Mewsen/rclone-studip-backend-oot/commit/459bac344ef41fa4e4e122ce21a78d8077ec59fc))
+
+
+### Bug Fixes
+
+* failing integration test suite ([74b0f53](https://github.com/Mewsen/rclone-studip-backend-oot/commit/74b0f535de0b021951744425f32e0182e40e6a9d))
+
 ## 1.0.0 (2026-03-24)
 
 
