@@ -104,7 +104,7 @@ func TestAgainstContainer() error {
 
 	defer func() {
 		fmt.Println(">> stopping Stud.IP demo stack")
-		if downErr := runCommandWithEnv(nil, "docker", "compose", "down", "--volumes", "--remove-orphans"); downErr != nil {
+		if downErr := runCommandWithEnv(nil, "docker", "compose", "--progress", "plain", "down", "--volumes", "--remove-orphans"); downErr != nil {
 			fmt.Fprintf(os.Stderr, "failed to stop Stud.IP demo stack: %v\n", downErr)
 		}
 	}()
@@ -352,11 +352,11 @@ func prepareStudIPTestEnvironment() (studIPTestConfig, studIPCourse, error) {
 func recreateStudIPDemoStack() error {
 	fmt.Println(">> recreating fresh Stud.IP demo stack")
 
-	if err := runCommandWithEnv(nil, "docker", "compose", "down", "--volumes", "--remove-orphans"); err != nil {
+	if err := runCommandWithEnv(nil, "docker", "compose", "--progress", "plain", "down", "--volumes", "--remove-orphans"); err != nil {
 		return err
 	}
 
-	return runCommandWithEnv(nil, "docker", "compose", "up", "-d", "--build")
+	return runCommandWithEnv(nil, "docker", "compose", "--progress", "plain", "up", "-d", "--build")
 }
 
 func waitForStudIPDemoCourse(baseURL, username, password string, timeout time.Duration) (studIPCourse, error) {
