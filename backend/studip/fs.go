@@ -636,7 +636,7 @@ func (f *Fs) FillFolderNode(
 		childrenNode.Parent = folderNode
 		childrenNode.ID = folder.ID
 		childrenNode.IsDir = true
-		childrenNode.Name = f.opt.Enc.ToStandardName(folder.Attributes.Name)
+		childrenNode.Name = folder.Attributes.Name
 		childrenNode.ChDate = folder.Attributes.Chdate
 		childrenNode.Path = joinPath(path, childrenNode.Name)
 		childrenNode.Size = -1
@@ -682,7 +682,7 @@ func (f *Fs) FillFolderNode(
 		childrenNode.ID = file.ID
 		childrenNode.IsDir = false
 		childrenNode.Parent = folderNode
-		childrenNode.Name = f.opt.Enc.ToStandardName(file.Attributes.Name)
+		childrenNode.Name = file.Attributes.Name
 		childrenNode.ChDate = file.Attributes.Chdate
 		childrenNode.Size = file.Attributes.Filesize
 		childrenNode.Path = joinPath(path, childrenNode.Name)
@@ -1045,8 +1045,7 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 	f.mu.RUnlock()
 
 	fs.Debugf(f, "Mkdir: creating directory %q under parent id=%q", dirname, parentNode.ID)
-	apiDirname := f.opt.Enc.FromStandardName(dirname)
-	if err := f.studIPMkDir(ctx, parentNode.ID, apiDirname); err != nil {
+	if err := f.studIPMkDir(ctx, parentNode.ID, dirname); err != nil {
 		return err
 	}
 
@@ -1122,7 +1121,7 @@ func (f *Fs) findDirectoryNodeByName(parentNode *Node, name string) *Node {
 func (f *Fs) findDirectoryByName(
 	ctx context.Context,
 	parentFolderID string,
-	name string,
+	dirname string,
 ) (StudIPFoldersData, error) {
 	if ctx.Err() != nil {
 		return StudIPFoldersData{}, ctx.Err()
@@ -1145,10 +1144,10 @@ func (f *Fs) findDirectoryByName(
 	)
 
 	Assert(
-		name != "",
+		dirname != "",
 		fmt.Sprintf(
 			"name must be not empty; name=%q",
-			name,
+			dirname,
 		),
 	)
 
@@ -1158,7 +1157,7 @@ func (f *Fs) findDirectoryByName(
 	}
 
 	for _, folder := range folders.Data {
-		if strings.EqualFold(f.opt.Enc.ToStandardName(folder.Attributes.Name), name) {
+		if strings.EqualFold(folder.Attributes.Name, dirname) {
 			return folder, nil
 		}
 	}
@@ -1254,8 +1253,7 @@ func (f *Fs) CreateParentDirectories(
 			targetNode.ID,
 		)
 
-		apiDirname := f.opt.Enc.FromStandardName(dirname)
-		if err := f.studIPMkDir(ctx, targetNode.ID, apiDirname); err != nil {
+		if err := f.studIPMkDir(ctx, targetNode.ID, dirname); err != nil {
 			return nil, err
 		}
 
@@ -1561,8 +1559,6 @@ func (f *Fs) Move(
 	if destName == "" {
 		return nil, fs.ErrorCantMove
 	}
-
-	destName = f.opt.Enc.FromStandardName(destName)
 
 	var moved *StudIPFileRefData
 	if dirPath(sourceAbs) == dirPath(destAbs) {

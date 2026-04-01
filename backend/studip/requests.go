@@ -50,6 +50,8 @@ func (f *Fs) studIPMkDir(
 		),
 	)
 
+	encodedFilename := f.opt.Enc.FromStandardName(filename)
+
 	URL := fmt.Sprintf("courses/%s/folders", f.opt.CourseID)
 
 	fs.Debugf(
@@ -78,7 +80,7 @@ func (f *Fs) studIPMkDir(
 	}{}
 
 	payload.Data.Type = "folders"
-	payload.Data.Attributes.Name = filename
+	payload.Data.Attributes.Name = encodedFilename
 	payload.Data.Relationships.Parent.Data.Type = "folders"
 	payload.Data.Relationships.Parent.Data.ID = parentDirectoryID
 
@@ -168,8 +170,13 @@ func (f *Fs) studIPGetFoldersOfFolder(
 		if len(page.Data) == 0 {
 			break
 		}
+
 		responseJSON.Data = append(responseJSON.Data, page.Data...)
 		responseJSON.Meta = page.Meta
+	}
+
+	for i := 0; i < len(responseJSON.Data); i++ {
+		responseJSON.Data[i].Attributes.Name = f.opt.Enc.ToStandardName(responseJSON.Data[i].Attributes.Name)
 	}
 
 	return responseJSON, nil
@@ -222,9 +229,14 @@ func (f *Fs) studIPGetFilesOfFolder(
 		if len(page.Data) == 0 {
 			break
 		}
+
 		responseJSON.Data = append(responseJSON.Data, page.Data...)
 		responseJSON.Meta = page.Meta
 		responseJSON.Links = page.Links
+	}
+
+	for i := 0; i < len(responseJSON.Data); i++ {
+		responseJSON.Data[i].Attributes.Name = f.opt.Enc.ToStandardName(responseJSON.Data[i].Attributes.Name)
 	}
 
 	return responseJSON, nil
@@ -276,6 +288,10 @@ func (f *Fs) studIPGetCourseFolders(ctx context.Context) (*StudIPFolders, error)
 		}
 		responseJSON.Data = append(responseJSON.Data, page.Data...)
 		responseJSON.Meta = page.Meta
+	}
+
+	for i := 0; i < len(responseJSON.Data); i++ {
+		responseJSON.Data[i].Attributes.Name = f.opt.Enc.ToStandardName(responseJSON.Data[i].Attributes.Name)
 	}
 
 	return responseJSON, nil
@@ -359,6 +375,7 @@ func (f *Fs) studIPGetFileRef(
 	}
 
 	URL := fmt.Sprintf("file-refs/%s", fileRefID)
+
 	responseJSON := new(StudIPFileRef)
 	res, err := f.client.CallJSON(
 		ctx,
@@ -377,7 +394,7 @@ func (f *Fs) studIPGetFileRef(
 func (f *Fs) studIPUpdateFileRef(
 	ctx context.Context,
 	fileRefID string,
-	name string,
+	filename string,
 	description string,
 	termsOfUseID string,
 ) (*StudIPFileRefData, error) {
@@ -397,13 +414,15 @@ func (f *Fs) studIPUpdateFileRef(
 		return nil, errors.New("fileRefID is empty")
 	}
 
-	if name == "" {
+	if filename == "" {
 		return nil, errors.New("name is empty")
 	}
 
 	if termsOfUseID == "" {
 		return nil, errors.New("termsOfUseID is empty")
 	}
+
+	encodedFilename := f.opt.Enc.FromStandardName(filename)
 
 	URL := fmt.Sprintf("file-refs/%s", fileRefID)
 
@@ -425,7 +444,7 @@ func (f *Fs) studIPUpdateFileRef(
 		} `json:"data"`
 	}{}
 	payload.Data.Type = "file-refs"
-	payload.Data.Attributes.Name = name
+	payload.Data.Attributes.Name = encodedFilename
 	payload.Data.Attributes.Description = description
 	payload.Data.Relationships.TermsOfUse.Data.Type = "terms-of-use"
 	payload.Data.Relationships.TermsOfUse.Data.ID = termsOfUseID
@@ -459,7 +478,7 @@ func (f *Fs) studIPCreateFileRefByReference(
 	ctx context.Context,
 	parentFolderID string,
 	fileID string,
-	name string,
+	filename string,
 	description string,
 	termsOfUseID string,
 ) (*StudIPFileRefData, error) {
@@ -483,7 +502,7 @@ func (f *Fs) studIPCreateFileRefByReference(
 		return nil, errors.New("fileID is empty")
 	}
 
-	if name == "" {
+	if filename == "" {
 		return nil, errors.New("name is empty")
 	}
 
@@ -491,8 +510,9 @@ func (f *Fs) studIPCreateFileRefByReference(
 		return nil, errors.New("termsOfUseID is empty")
 	}
 
+	encodedFilename := f.opt.Enc.FromStandardName(filename)
+
 	URL := fmt.Sprintf("folders/%s/file-refs", parentFolderID)
-	apiName := f.opt.Enc.FromStandardName(name)
 
 	payload := struct {
 		Data struct {
@@ -517,8 +537,9 @@ func (f *Fs) studIPCreateFileRefByReference(
 			} `json:"relationships"`
 		} `json:"data"`
 	}{}
+
 	payload.Data.Type = "file-refs"
-	payload.Data.Attributes.Name = apiName
+	payload.Data.Attributes.Name = encodedFilename
 	payload.Data.Attributes.Description = description
 	payload.Data.Relationships.File.Data.Type = "files"
 	payload.Data.Relationships.File.Data.ID = fileID
@@ -553,7 +574,7 @@ func (f *Fs) studIPCreateFileRefByReference(
 func (f *Fs) studIPUpdateFolder(
 	ctx context.Context,
 	folderID string,
-	name string,
+	filename string,
 	parentFolderID string,
 ) error {
 	if ctx.Err() != nil {
@@ -571,38 +592,42 @@ func (f *Fs) studIPUpdateFolder(
 	if folderID == "" {
 		return errors.New("folderID is empty")
 	}
-	if name == "" && parentFolderID == "" {
-		return errors.New("name and parentFolderID are empty")
+
+	if filename == "" {
+		return errors.New("filename is empty")
 	}
+
+	if parentFolderID == "" {
+		return errors.New("parentFolderID is empty")
+	}
+
+	encodedFilename := f.opt.Enc.FromStandardName(filename)
 
 	URL := fmt.Sprintf("folders/%s", folderID)
-	apiName := ""
-	if name != "" {
-		apiName = f.opt.Enc.FromStandardName(name)
-	}
 
-	data := map[string]any{
-		"type": "folders",
-	}
-	if name != "" {
-		data["attributes"] = map[string]any{
-			"name": apiName,
-		}
-	}
-	if parentFolderID != "" {
-		data["relationships"] = map[string]any{
-			"parent": map[string]any{
-				"data": map[string]any{
-					"type": "folders",
-					"id":   parentFolderID,
-				},
-			},
-		}
-	}
+	payload := struct {
+		Data struct {
+			Type       string `json:"type"`
+			Attributes struct {
+				Name string `json:"name"`
+			} `json:"attributes"`
+			Relationships struct {
+				Parent struct {
+					Data struct {
+						Type string `json:"type"`
+						ID   string `json:"id"`
+					} `json:"data"`
+				} `json:"parent"`
+			} `json:"relationships"`
+		} `json:"data"`
+	}{}
 
-	body, err := json.Marshal(map[string]any{
-		"data": data,
-	})
+	payload.Data.Type = "folders"
+	payload.Data.Attributes.Name = encodedFilename
+	payload.Data.Relationships.Parent.Data.Type = "folders"
+	payload.Data.Relationships.Parent.Data.ID = parentFolderID
+
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -721,14 +746,17 @@ func (f *Fs) studIPUpdateFileContent(
 	if fileRefID == "" {
 		return "", errors.New("fileRefID is empty")
 	}
+
 	if in == nil {
 		return "", errors.New("input reader is nil")
 	}
+
 	if filename == "" {
 		return "", fmt.Errorf("invalid filename %q", filename)
 	}
 
 	URL := fmt.Sprintf("file-refs/%s/content", fileRefID)
+
 	fs.Debugf(
 		f,
 		"studIPUpdateFileContent: start fileRefID=%q filename=%q path=%q",
@@ -762,12 +790,16 @@ func (f *Fs) studIPUploadFileContentToPath(
 	if URL == "" {
 		return "", errors.New("URL is empty")
 	}
+
 	if in == nil {
 		return "", errors.New("input reader is nil")
 	}
+
 	if filename == "" {
 		return "", fmt.Errorf("invalid filename %q", filename)
 	}
+
+	encodedFilename := f.opt.Enc.FromStandardName(filename)
 
 	// Read first 512 bytes for content type detection.
 	buffer := make([]byte, 512)
@@ -792,7 +824,7 @@ func (f *Fs) studIPUploadFileContentToPath(
 		fullReader,
 		url.Values{},
 		"file",
-		filename,
+		encodedFilename,
 		detectedType,
 	)
 	if err != nil {
