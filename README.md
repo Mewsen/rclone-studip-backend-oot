@@ -12,6 +12,13 @@ or
 
 - as an rclone plugin loaded by an existing rclone installation
 
+
+### AUR Package
+
+```bash
+paru rclone-studip-git 
+```
+
 ### Standalone binary
 
 Download the binary for your platform from the [releases page](https://github.com/Mewsen/rclone-studip-backend-oot/releases).
