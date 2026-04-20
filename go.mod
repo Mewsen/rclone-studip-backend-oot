@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/aalpar/deheap v0.0.0-20210914013432-0cc84d79dec3
-	github.com/rclone/rclone v1.73.4
+	github.com/rclone/rclone v1.73.5
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 	github.com/spf13/cobra v1.10.1
 	github.com/spf13/pflag v1.0.10
