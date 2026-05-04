@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	_ "github.com/mewsen/rclone-studip-backend-oot/backend/studip"
 	_ "github.com/rclone/rclone/backend/all"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/accounting"
