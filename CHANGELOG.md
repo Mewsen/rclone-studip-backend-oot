@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.4](https://github.com/Mewsen/rclone-studip-backend-oot/compare/v1.2.3...v1.2.4) (2026-05-13)
+
+
+### Bug Fixes
+
+* **deps:** update rclone to v1.74.1 ([b8c230e](https://github.com/Mewsen/rclone-studip-backend-oot/commit/b8c230e151baee982c1d2eb57d50d75f87df97f6))
+
 ## [1.2.3](https://github.com/Mewsen/rclone-studip-backend-oot/compare/v1.2.2...v1.2.3) (2026-05-04)
 
 
