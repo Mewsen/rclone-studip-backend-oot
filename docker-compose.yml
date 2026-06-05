@@ -8,21 +8,18 @@ services:
       - --sql-mode=NO_ENGINE_SUBSTITUTION
     volumes:
       - db_data:/var/lib/mysql
-    restart: unless-stopped 
+    restart: unless-stopped
     environment:
       MYSQL_RANDOM_ROOT_PASSWORD: 1
       MYSQL_DATABASE: studip_db
       MYSQL_USER: studip_user
       MYSQL_PASSWORD: studip_password
   web:
-    build:
-      context: ./studip
-      dockerfile: ./docker/studip/Dockerfile
-    image: rclone-studip-demo-web:local-studip
+    image: ghcr.io/mewsen/studip:c3e800320fe8c6cc1bae4b73a9b3eb1ddb218186
     depends_on:
       - db
     ports:
-    - "8034:80"
+      - "8034:80"
     volumes:
       - ./docker/php/zz-test.ini:/usr/local/etc/php/conf.d/zz-test.ini:ro
     restart: unless-stopped
