@@ -1476,8 +1476,6 @@ func (f *Fs) Features() *fs.Features {
 	return (&fs.Features{
 		CanHaveEmptyDirectories: true,
 		CaseInsensitive:         true,
-		// TODO: Implement this
-		Copy: nil,
 	}).
 		Fill(context.Background(), f)
 }
